@@ -3,11 +3,29 @@ package smtp
 import (
 	"crypto/tls"
 	"fmt"
+	"net/mail"
 	"net/smtp"
 	"strings"
 
 	"github.com/edouard-claude/mailbridge-mcp/internal/config"
 )
+
+// extractEmail parses a potentially formatted address like
+// "'Name' <user@host>" and returns just "user@host".
+func extractEmail(addr string) string {
+	parsed, err := mail.ParseAddress(addr)
+	if err == nil {
+		return parsed.Address
+	}
+	// Fallback: strip angle brackets manually
+	addr = strings.TrimSpace(addr)
+	if i := strings.LastIndex(addr, "<"); i >= 0 {
+		if j := strings.LastIndex(addr, ">"); j > i {
+			return addr[i+1 : j]
+		}
+	}
+	return addr
+}
 
 // Send sends a plain text email via SMTP.
 func Send(acc *config.Account, password string, to, cc, bcc []string, subject, body string) error {
@@ -81,8 +99,8 @@ func sendStartTLS(acc *config.Account, password string, recipients []string, msg
 		return fmt.Errorf("STARTTLS: %w", err)
 	}
 
-	auth := smtp.PlainAuth("", acc.Email, password, host)
-	if err := c.Auth(auth); err != nil {
+	authMech := smtp.PlainAuth("", acc.Email, password, host)
+	if err := c.Auth(authMech); err != nil {
 		return fmt.Errorf("SMTP auth: %w", err)
 	}
 
@@ -90,7 +108,7 @@ func sendStartTLS(acc *config.Account, password string, recipients []string, msg
 		return fmt.Errorf("SMTP MAIL FROM: %w", err)
 	}
 	for _, rcpt := range recipients {
-		if err := c.Rcpt(rcpt); err != nil {
+		if err := c.Rcpt(extractEmail(rcpt)); err != nil {
 			return fmt.Errorf("SMTP RCPT TO %s: %w", rcpt, err)
 		}
 	}
@@ -125,8 +143,8 @@ func sendTLS(acc *config.Account, password string, recipients []string, msg []by
 	}
 	defer c.Close()
 
-	auth := smtp.PlainAuth("", acc.Email, password, host)
-	if err := c.Auth(auth); err != nil {
+	authMech := smtp.PlainAuth("", acc.Email, password, host)
+	if err := c.Auth(authMech); err != nil {
 		return fmt.Errorf("SMTP auth: %w", err)
 	}
 
@@ -134,7 +152,7 @@ func sendTLS(acc *config.Account, password string, recipients []string, msg []by
 		return fmt.Errorf("SMTP MAIL FROM: %w", err)
 	}
 	for _, rcpt := range recipients {
-		if err := c.Rcpt(rcpt); err != nil {
+		if err := c.Rcpt(extractEmail(rcpt)); err != nil {
 			return fmt.Errorf("SMTP RCPT TO %s: %w", rcpt, err)
 		}
 	}

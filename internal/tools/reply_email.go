@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"net/mail"
 	"strings"
 
 	"github.com/edouard-claude/mailbridge-mcp/internal/auth"
@@ -78,12 +79,12 @@ func registerReplyEmail(s *server.MCPServer, cfg *config.Config, pool *imappool.
 		var cc []string
 		if replyAll {
 			for _, addr := range original.To {
-				if !strings.EqualFold(addr, acc.Email) {
+				if !isSameEmail(addr, acc.Email) {
 					cc = append(cc, addr)
 				}
 			}
 			for _, addr := range original.Cc {
-				if !strings.EqualFold(addr, acc.Email) {
+				if !isSameEmail(addr, acc.Email) {
 					cc = append(cc, addr)
 				}
 			}
@@ -113,4 +114,21 @@ func registerReplyEmail(s *server.MCPServer, cfg *config.Config, pool *imappool.
 
 		return mcp.NewToolResultText(fmt.Sprintf("Reply sent successfully from %s to %s.", acc.Email, original.From)), nil
 	})
+}
+
+// isSameEmail compares a potentially formatted address (e.g. "'Name' <user@host>")
+// against a plain email address, ignoring the display name.
+func isSameEmail(addr, email string) bool {
+	parsed, err := mail.ParseAddress(addr)
+	if err == nil {
+		return strings.EqualFold(parsed.Address, email)
+	}
+	// Fallback: try to extract email from angle brackets
+	addr = strings.TrimSpace(addr)
+	if i := strings.LastIndex(addr, "<"); i >= 0 {
+		if j := strings.LastIndex(addr, ">"); j > i {
+			return strings.EqualFold(addr[i+1:j], email)
+		}
+	}
+	return strings.EqualFold(addr, email)
 }
