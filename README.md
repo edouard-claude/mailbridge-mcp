@@ -1,0 +1,126 @@
+# mailbridge-mcp
+
+MCP server for multi-account IMAP/SMTP email access, designed for Claude Desktop.
+
+## Features
+
+- **Multi-account** — manage multiple email accounts from a single server
+- **IMAP** — list mailboxes, search, read, move, and flag emails
+- **SMTP** — send new emails and reply to existing ones with proper threading headers
+- **macOS Keychain** — passwords are stored securely, never in config files
+- **MCP stdio** — runs as a subprocess launched by Claude Desktop
+
+## Tools
+
+| Tool | Description |
+|------|-------------|
+| `list_accounts` | List all configured email accounts |
+| `list_mailboxes` | List mailbox folders for an account |
+| `search_emails` | Search emails by sender, subject, date, read/unread |
+| `read_email` | Read full email content by UID |
+| `send_email` | Send a new email |
+| `reply_email` | Reply to an email (with proper In-Reply-To/References) |
+| `move_email` | Move an email to another folder |
+| `mark_email` | Mark as read/unread/flagged/unflagged |
+
+## Installation
+
+```bash
+# Build
+make build
+
+# Or install to /usr/local/bin
+make install
+```
+
+## Setup
+
+### 1. Add an email account
+
+```bash
+./mailbridge-mcp setup
+```
+
+This will interactively ask for:
+- Account ID (e.g. `work`, `personal`)
+- Email address
+- IMAP host (e.g. `ssl0.ovh.net`, `imap.gmail.com`)
+- SMTP host (defaults to IMAP host, or `smtp.*` if IMAP starts with `imap.*`)
+- Password (stored in macOS Keychain)
+
+The config file is automatically created at `~/.config/mailbridge/accounts.json`.
+
+Run `setup` again to add more accounts — existing accounts with the same ID are updated in place.
+
+### 2. Configure Claude Desktop
+
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "mailbridge": {
+      "command": "/path/to/mailbridge-mcp",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+### 3. Restart Claude Desktop
+
+The email tools will be available immediately.
+
+## Configuration
+
+The config file at `~/.config/mailbridge/accounts.json` is managed by the `setup` command. Example:
+
+```json
+{
+  "accounts": [
+    {
+      "id": "work",
+      "label": "work",
+      "email": "user@example.com",
+      "imap": {
+        "host": "imap.example.com",
+        "port": 993,
+        "tls": true
+      },
+      "smtp": {
+        "host": "smtp.example.com",
+        "port": 587,
+        "starttls": true
+      },
+      "auth": {
+        "type": "keychain",
+        "keychain_service": "mailbridge-mcp",
+        "keychain_account": "user@example.com"
+      }
+    }
+  ],
+  "defaults": {
+    "max_fetch": 50,
+    "body_max_chars": 10000,
+    "timeout_seconds": 30
+  }
+}
+```
+
+## Security
+
+- Passwords are stored in the macOS Keychain via [go-keyring](https://github.com/zalando/go-keyring), never in plain text
+- IMAP connections use TLS (port 993) or STARTTLS
+- SMTP connections use STARTTLS (port 587) or TLS (port 465)
+- Plain text connections are never allowed
+
+## Tech Stack
+
+- [mcp-go](https://github.com/mark3labs/mcp-go) — MCP server framework
+- [go-imap/v2](https://github.com/emersion/go-imap) — IMAP client
+- [go-message](https://github.com/emersion/go-message) — MIME parsing
+- [go-keyring](https://github.com/zalando/go-keyring) — macOS Keychain access
+
+## License
+
+MIT
