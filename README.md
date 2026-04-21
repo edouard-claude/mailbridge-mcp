@@ -5,7 +5,9 @@ MCP server for multi-account IMAP/SMTP email access, designed for Claude Desktop
 ## Features
 
 - **Multi-account** — manage multiple email accounts from a single server
-- **IMAP** — list mailboxes, search, read, move, and flag emails
+- **IMAP** — list mailboxes, search, read, move, copy, delete, and flag emails
+- **Drafts** — save drafts and send them later
+- **Folders** — create, rename, and delete mailbox folders
 - **SMTP** — send new emails and reply to existing ones with proper threading headers
 - **macOS Keychain** — passwords are stored securely, never in config files
 - **MCP stdio** — runs as a subprocess launched by Claude Desktop
@@ -16,12 +18,20 @@ MCP server for multi-account IMAP/SMTP email access, designed for Claude Desktop
 |------|-------------|
 | `list_accounts` | List all configured email accounts |
 | `list_mailboxes` | List mailbox folders for an account |
+| `mailbox_status` | Get message/unseen count for a mailbox |
 | `search_emails` | Search emails by sender, subject, date, read/unread |
 | `read_email` | Read full email content by UID |
 | `send_email` | Send a new email |
 | `reply_email` | Reply to an email (with proper In-Reply-To/References) |
+| `save_draft` | Save a draft email to the Drafts folder |
+| `send_draft` | Send a draft email by UID |
 | `move_email` | Move an email to another folder |
+| `copy_email` | Copy an email to another folder |
 | `mark_email` | Mark as read/unread/flagged/unflagged |
+| `delete_email` | Permanently delete an email |
+| `create_mailbox` | Create a new mailbox folder |
+| `rename_mailbox` | Rename a mailbox folder |
+| `delete_mailbox` | Delete an empty mailbox folder |
 
 ## Installation
 
