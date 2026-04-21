@@ -18,7 +18,7 @@ type EmailSummary struct {
 }
 
 // Search searches for emails in a mailbox matching the given criteria.
-func Search(c *imapclient.Client, mailbox string, query, from, since, before string, unseenOnly bool, limit int) ([]EmailSummary, error) {
+func Search(c *imapclient.Client, mailbox string, query, from, since, before string, unseenOnly, flaggedOnly bool, limit int) ([]EmailSummary, error) {
 	if _, err := c.Select(mailbox, nil).Wait(); err != nil {
 		return nil, fmt.Errorf("select %s: %w", mailbox, err)
 	}
@@ -58,6 +58,10 @@ func Search(c *imapclient.Client, mailbox string, query, from, since, before str
 
 	if unseenOnly {
 		criteria.NotFlag = append(criteria.NotFlag, imap.FlagSeen)
+	}
+
+	if flaggedOnly {
+		criteria.Flag = append(criteria.Flag, imap.FlagFlagged)
 	}
 
 	searchData, err := c.UIDSearch(criteria, nil).Wait()
@@ -143,7 +147,23 @@ func FormatSummaries(accountID, mailbox string, summaries []EmailSummary) string
 	fmt.Fprintf(&sb, "Found %d email(s) in %s/%s:\n\n", len(summaries), accountID, mailbox)
 	for i, s := range summaries {
 		date := s.Date.Format("2006-01-02")
-		fmt.Fprintf(&sb, "%d. [UID:%d] %s | From: %s | Subject: %s\n", i+1, s.UID, date, s.From, s.Subject)
+		flagsStr := formatFlags(s.Flags)
+		if flagsStr != "" {
+			fmt.Fprintf(&sb, "%d. [UID:%d] %s | flags: %s | From: %s | Subject: %s\n", i+1, s.UID, date, flagsStr, s.From, s.Subject)
+		} else {
+			fmt.Fprintf(&sb, "%d. [UID:%d] %s | From: %s | Subject: %s\n", i+1, s.UID, date, s.From, s.Subject)
+		}
 	}
 	return sb.String()
+}
+
+func formatFlags(flags []imap.Flag) string {
+	if len(flags) == 0 {
+		return ""
+	}
+	var parts []string
+	for _, f := range flags {
+		parts = append(parts, string(f))
+	}
+	return strings.Join(parts, " ")
 }

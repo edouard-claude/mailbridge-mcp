@@ -18,6 +18,7 @@ type ParsedEmail struct {
 	Date        string
 	Subject     string
 	MessageID   string
+	Flags       []goimap.Flag
 	Body        string
 	Attachments []Attachment
 }
@@ -57,7 +58,8 @@ func FetchEmail(c *imapclient.Client, mailbox string, uid uint32, maxBodyChars i
 	msg := messages[0]
 	parsed := &ParsedEmail{}
 
-	// Extract envelope data
+	// Extract envelope and flags
+	parsed.Flags = msg.Flags
 	if msg.Envelope != nil {
 		parsed.Subject = msg.Envelope.Subject
 		parsed.MessageID = msg.Envelope.MessageID
@@ -129,6 +131,7 @@ func FormatEmail(parsed *ParsedEmail) string {
 	fmt.Fprintf(&sb, "Date: %s\n", parsed.Date)
 	fmt.Fprintf(&sb, "Subject: %s\n", parsed.Subject)
 	fmt.Fprintf(&sb, "Message-ID: %s\n", parsed.MessageID)
+	fmt.Fprintf(&sb, "Flags: %s\n", formatFlags(parsed.Flags))
 	fmt.Fprintf(&sb, "\n---\n\n%s", parsed.Body)
 
 	if len(parsed.Attachments) > 0 {

@@ -35,6 +35,9 @@ func registerSearchEmails(s *server.MCPServer, cfg *config.Config, pool *imappoo
 		mcp.WithBoolean("unseen_only",
 			mcp.Description("Only return unread emails"),
 		),
+		mcp.WithBoolean("flagged_only",
+			mcp.Description("Only return flagged/starred emails"),
+		),
 		mcp.WithNumber("limit",
 			mcp.Description("Max number of results (default: 20, max: 50)"),
 		),
@@ -60,6 +63,7 @@ func registerSearchEmails(s *server.MCPServer, cfg *config.Config, pool *imappoo
 		since := req.GetString("since", "")
 		before := req.GetString("before", "")
 		unseenOnly := req.GetBool("unseen_only", false)
+		flaggedOnly := req.GetBool("flagged_only", false)
 		limit := req.GetInt("limit", 20)
 		if limit > 50 {
 			limit = 50
@@ -73,7 +77,7 @@ func registerSearchEmails(s *server.MCPServer, cfg *config.Config, pool *imappoo
 			return mcp.NewToolResultError(fmt.Sprintf("IMAP connection failed for %s: %v", accountID, err)), nil
 		}
 
-		summaries, err := imappool.Search(client, mailbox, query, from, since, before, unseenOnly, limit)
+		summaries, err := imappool.Search(client, mailbox, query, from, since, before, unseenOnly, flaggedOnly, limit)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("search failed: %v", err)), nil
 		}
