@@ -8,6 +8,7 @@ build:
 
 install: build
 	cp $(BINARY) /usr/local/bin/
+	codesign --force --sign - /usr/local/bin/$(BINARY)
 
 clean:
 	rm -f $(BINARY)

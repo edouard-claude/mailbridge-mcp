@@ -2,6 +2,7 @@ package imap
 
 import (
 	"fmt"
+	"time"
 
 	goimap "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
@@ -81,4 +82,117 @@ func ListMailboxes(c *imapclient.Client) ([]string, error) {
 		names = append(names, mb.Mailbox)
 	}
 	return names, nil
+}
+
+// CreateMailbox creates a new mailbox folder.
+func CreateMailbox(c *imapclient.Client, name string) error {
+	if err := c.Create(name, nil).Wait(); err != nil {
+		return fmt.Errorf("create mailbox %s: %w", name, err)
+	}
+	return nil
+}
+
+// DeleteMailbox deletes an existing mailbox folder. The folder must be empty.
+func DeleteMailbox(c *imapclient.Client, name string) error {
+	if err := c.Delete(name).Wait(); err != nil {
+		return fmt.Errorf("delete mailbox %s: %w", name, err)
+	}
+	return nil
+}
+
+// RenameMailbox renames an existing mailbox folder.
+func RenameMailbox(c *imapclient.Client, oldName, newName string) error {
+	if err := c.Rename(oldName, newName).Wait(); err != nil {
+		return fmt.Errorf("rename mailbox %s to %s: %w", oldName, newName, err)
+	}
+	return nil
+}
+
+// CopyEmail copies an email from one mailbox to another.
+func CopyEmail(c *imapclient.Client, fromMailbox string, uid uint32, toMailbox string) error {
+	if _, err := c.Select(fromMailbox, nil).Wait(); err != nil {
+		return fmt.Errorf("select %s: %w", fromMailbox, err)
+	}
+
+	uidSet := goimap.UIDSet{}
+	uidSet.AddNum(goimap.UID(uid))
+
+	if _, err := c.Copy(uidSet, toMailbox).Wait(); err != nil {
+		return fmt.Errorf("copy UID %d from %s to %s: %w", uid, fromMailbox, toMailbox, err)
+	}
+	return nil
+}
+
+// DeleteEmail permanently deletes an email (STORE \Deleted + UID EXPUNGE).
+func DeleteEmail(c *imapclient.Client, mailbox string, uid uint32) error {
+	if _, err := c.Select(mailbox, nil).Wait(); err != nil {
+		return fmt.Errorf("select %s: %w", mailbox, err)
+	}
+
+	uidSet := goimap.UIDSet{}
+	uidSet.AddNum(goimap.UID(uid))
+
+	storeFlags := &goimap.StoreFlags{
+		Op:     goimap.StoreFlagsAdd,
+		Flags:  []goimap.Flag{goimap.FlagDeleted},
+		Silent: true,
+	}
+	if err := c.Store(uidSet, storeFlags, nil).Close(); err != nil {
+		return fmt.Errorf("store \\Deleted flag UID %d: %w", uid, err)
+	}
+
+	if err := c.UIDExpunge(uidSet).Close(); err != nil {
+		return fmt.Errorf("expunge UID %d: %w", uid, err)
+	}
+
+	return nil
+}
+
+// AppendMessage appends a raw message to a mailbox with the given flags.
+func AppendMessage(c *imapclient.Client, mailbox string, flags []goimap.Flag, msg []byte) error {
+	cmd := c.Append(mailbox, int64(len(msg)), &goimap.AppendOptions{
+		Flags: flags,
+		Time:  time.Now(),
+	})
+	if _, err := cmd.Write(msg); err != nil {
+		return fmt.Errorf("append write to %s: %w", mailbox, err)
+	}
+	if err := cmd.Close(); err != nil {
+		return fmt.Errorf("append close: %w", err)
+	}
+	if _, err := cmd.Wait(); err != nil {
+		return fmt.Errorf("append to %s: %w", mailbox, err)
+	}
+	return nil
+}
+
+// MailboxStatusInfo holds status information about a mailbox.
+type MailboxStatusInfo struct {
+	Mailbox  string
+	Messages uint32
+	Unseen   uint32
+}
+
+// MailboxStatus returns status information about a mailbox (messages, unseen counts).
+// Note: NumDeleted is not requested because many servers (e.g. OVH, Dovecot without IMAP4rev2)
+// return BAD for the DELETED status item.
+func MailboxStatus(c *imapclient.Client, mailbox string) (*MailboxStatusInfo, error) {
+	data, err := c.Status(mailbox, &goimap.StatusOptions{
+		NumMessages: true,
+		NumUnseen:   true,
+	}).Wait()
+	if err != nil {
+		return nil, fmt.Errorf("status %s: %w", mailbox, err)
+	}
+
+	info := &MailboxStatusInfo{
+		Mailbox: data.Mailbox,
+	}
+	if data.NumMessages != nil {
+		info.Messages = *data.NumMessages
+	}
+	if data.NumUnseen != nil {
+		info.Unseen = *data.NumUnseen
+	}
+	return info, nil
 }

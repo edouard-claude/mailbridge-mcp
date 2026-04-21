@@ -34,7 +34,7 @@ func Send(acc *config.Account, password string, to, cc, bcc []string, subject, b
 	recipients = append(recipients, cc...)
 	recipients = append(recipients, bcc...)
 
-	msg := buildMessage(acc.Email, to, cc, subject, body, nil)
+	msg := BuildMessage(acc.Email, to, cc, subject, body, nil)
 
 	if acc.SMTP.TLS {
 		return sendTLS(acc, password, recipients, msg)
@@ -57,7 +57,7 @@ func SendReply(acc *config.Account, password string, to, cc []string, subject, b
 		subject = "Re: " + subject
 	}
 
-	msg := buildMessage(acc.Email, to, cc, subject, body, extraHeaders)
+	msg := BuildMessage(acc.Email, to, cc, subject, body, extraHeaders)
 
 	if acc.SMTP.TLS {
 		return sendTLS(acc, password, recipients, msg)
@@ -65,7 +65,8 @@ func SendReply(acc *config.Account, password string, to, cc []string, subject, b
 	return sendStartTLS(acc, password, recipients, msg)
 }
 
-func buildMessage(from string, to, cc []string, subject, body string, extraHeaders map[string]string) []byte {
+// BuildMessage constructs a MIME message with the given headers and body.
+func BuildMessage(from string, to, cc []string, subject, body string, extraHeaders map[string]string) []byte {
 	var msg strings.Builder
 	fmt.Fprintf(&msg, "From: %s\r\n", from)
 	fmt.Fprintf(&msg, "To: %s\r\n", strings.Join(to, ", "))
