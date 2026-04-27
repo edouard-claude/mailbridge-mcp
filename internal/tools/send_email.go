@@ -7,12 +7,14 @@ import (
 
 	"github.com/edouard-claude/mailbridge-mcp/internal/auth"
 	"github.com/edouard-claude/mailbridge-mcp/internal/config"
+	imappool "github.com/edouard-claude/mailbridge-mcp/internal/imap"
 	smtpsender "github.com/edouard-claude/mailbridge-mcp/internal/smtp"
+	goimap "github.com/emersion/go-imap/v2"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
 
-func registerSendEmail(s *server.MCPServer, cfg *config.Config) {
+func registerSendEmail(s *server.MCPServer, cfg *config.Config, pool *imappool.Pool) {
 	tool := mcp.NewTool("send_email",
 		mcp.WithDescription("Send a new email from a configured account. Supports plain text body, CC, BCC. Does NOT support attachments."),
 		mcp.WithString("account_id",
@@ -76,8 +78,16 @@ func registerSendEmail(s *server.MCPServer, cfg *config.Config) {
 			return mcp.NewToolResultError(fmt.Sprintf("get password for %s: %v", acc.Email, err)), nil
 		}
 
-		if err := smtpsender.Send(acc, password, to, cc, bcc, subject, body); err != nil {
+		msg, err := smtpsender.Send(acc, password, to, cc, bcc, subject, body)
+		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("send failed: %v", err)), nil
+		}
+
+		// Copy to Sent folder via IMAP APPEND
+		if client, err := pool.Get(accountID); err == nil {
+			if sentMailbox, err := imappool.FindSentMailbox(client); err == nil {
+				imappool.AppendMessage(client, sentMailbox, []goimap.Flag{goimap.FlagSeen}, msg)
+			}
 		}
 
 		return mcp.NewToolResultText(fmt.Sprintf("Email sent successfully from %s to %s.", acc.Email, toStr)), nil

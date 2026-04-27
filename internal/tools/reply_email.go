@@ -10,6 +10,7 @@ import (
 	"github.com/edouard-claude/mailbridge-mcp/internal/config"
 	imappool "github.com/edouard-claude/mailbridge-mcp/internal/imap"
 	smtpsender "github.com/edouard-claude/mailbridge-mcp/internal/smtp"
+	goimap "github.com/emersion/go-imap/v2"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -96,7 +97,7 @@ func registerReplyEmail(s *server.MCPServer, cfg *config.Config, pool *imappool.
 		parentID := ensureAngleBrackets(original.MessageID)
 		var refs []string
 		for _, id := range original.References {
-			refs = append(refs, "<"+id+">")
+			refs = append(refs, ensureAngleBrackets(id))
 		}
 		if parentID != "" {
 			refs = append(refs, parentID)
@@ -119,8 +120,14 @@ func registerReplyEmail(s *server.MCPServer, cfg *config.Config, pool *imappool.
 			return mcp.NewToolResultError(fmt.Sprintf("get password: %v", err)), nil
 		}
 
-		if err := smtpsender.SendReply(acc, password, to, cc, subject, quotedBody.String(), inReplyTo, references); err != nil {
+		msg, err := smtpsender.SendReply(acc, password, to, cc, subject, quotedBody.String(), inReplyTo, references)
+		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("reply failed: %v", err)), nil
+		}
+
+		// Copy to Sent folder via IMAP APPEND
+		if sentMailbox, err := imappool.FindSentMailbox(client); err == nil {
+			imappool.AppendMessage(client, sentMailbox, []goimap.Flag{goimap.FlagSeen}, msg)
 		}
 
 		return mcp.NewToolResultText(fmt.Sprintf("Reply sent successfully from %s to %s.", acc.Email, original.From)), nil

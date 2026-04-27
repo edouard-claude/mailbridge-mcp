@@ -1,11 +1,18 @@
 package smtp
 
 import (
+	"bytes"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"fmt"
+	"mime"
+	"mime/quotedprintable"
 	"net/mail"
 	"net/smtp"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/edouard-claude/mailbridge-mcp/internal/config"
 )
@@ -27,8 +34,64 @@ func extractEmail(addr string) string {
 	return addr
 }
 
-// Send sends a plain text email via SMTP.
-func Send(acc *config.Account, password string, to, cc, bcc []string, subject, body string) error {
+// generateMessageID creates a globally unique Message-ID per RFC 5322 §3.6.4.
+func generateMessageID(from string) string {
+	domain := "localhost"
+	if parsed, err := mail.ParseAddress(from); err == nil {
+		if i := strings.IndexByte(parsed.Address, '@'); i >= 0 {
+			domain = parsed.Address[i+1:]
+		}
+	} else if i := strings.IndexByte(from, '@'); i >= 0 {
+		domain = from[i+1:]
+	}
+	b := make([]byte, 16)
+	rand.Read(b)
+	return fmt.Sprintf("<%s.%s@%s>", hex.EncodeToString(b), strconv.FormatInt(time.Now().UnixNano(), 36), domain)
+}
+
+// isASCII reports whether s contains only ASCII characters.
+func isASCII(s string) bool {
+	for _, r := range s {
+		if r > 127 {
+			return false
+		}
+	}
+	return true
+}
+
+// sanitizeHeaderValue strips CR and LF to prevent header injection (RFC 5322 §2.2).
+func sanitizeHeaderValue(s string) string {
+	return strings.NewReplacer("\r", "", "\n", "").Replace(s)
+}
+
+// foldHeader wraps a long header value at whitespace boundaries to keep lines
+// ≤ 78 characters per RFC 5322 §2.2.3. prefixLen is the length of
+// "Header-Name: " already on the first line.
+func foldHeader(value string, prefixLen int) string {
+	const maxLen = 78
+	if prefixLen+len(value) <= maxLen {
+		return value
+	}
+	var buf strings.Builder
+	lineLen := prefixLen
+	for i, token := range strings.Fields(value) {
+		if i > 0 {
+			if lineLen+1+len(token) > maxLen {
+				buf.WriteString("\r\n ")
+				lineLen = 1
+			} else {
+				buf.WriteByte(' ')
+				lineLen++
+			}
+		}
+		buf.WriteString(token)
+		lineLen += len(token)
+	}
+	return buf.String()
+}
+
+// Send sends a plain text email via SMTP. Returns the built message for IMAP Sent copy.
+func Send(acc *config.Account, password string, to, cc, bcc []string, subject, body string) ([]byte, error) {
 	recipients := make([]string, 0, len(to)+len(cc)+len(bcc))
 	recipients = append(recipients, to...)
 	recipients = append(recipients, cc...)
@@ -36,14 +99,18 @@ func Send(acc *config.Account, password string, to, cc, bcc []string, subject, b
 
 	msg := BuildMessage(acc.Email, to, cc, subject, body, nil)
 
+	var err error
 	if acc.SMTP.TLS {
-		return sendTLS(acc, password, recipients, msg)
+		err = sendTLS(acc, password, recipients, msg)
+	} else {
+		err = sendStartTLS(acc, password, recipients, msg)
 	}
-	return sendStartTLS(acc, password, recipients, msg)
+	return msg, err
 }
 
 // SendReply sends a reply email with proper In-Reply-To and References headers.
-func SendReply(acc *config.Account, password string, to, cc []string, subject, body, inReplyTo, references string) error {
+// Returns the built message for IMAP Sent copy.
+func SendReply(acc *config.Account, password string, to, cc []string, subject, body, inReplyTo, references string) ([]byte, error) {
 	recipients := make([]string, 0, len(to)+len(cc))
 	recipients = append(recipients, to...)
 	recipients = append(recipients, cc...)
@@ -59,30 +126,70 @@ func SendReply(acc *config.Account, password string, to, cc []string, subject, b
 
 	msg := BuildMessage(acc.Email, to, cc, subject, body, extraHeaders)
 
+	var err error
 	if acc.SMTP.TLS {
-		return sendTLS(acc, password, recipients, msg)
+		err = sendTLS(acc, password, recipients, msg)
+	} else {
+		err = sendStartTLS(acc, password, recipients, msg)
 	}
-	return sendStartTLS(acc, password, recipients, msg)
+	return msg, err
 }
 
-// BuildMessage constructs a MIME message with the given headers and body.
+// BuildMessage constructs an RFC 5322 compliant MIME message.
 func BuildMessage(from string, to, cc []string, subject, body string, extraHeaders map[string]string) []byte {
 	var msg strings.Builder
-	fmt.Fprintf(&msg, "From: %s\r\n", from)
-	fmt.Fprintf(&msg, "To: %s\r\n", strings.Join(to, ", "))
+
+	// Date (RFC 5322 §3.6 — required)
+	fmt.Fprintf(&msg, "Date: %s\r\n", time.Now().Format(time.RFC1123Z))
+
+	// From
+	fmt.Fprintf(&msg, "From: %s\r\n", sanitizeHeaderValue(from))
+
+	// To
+	fmt.Fprintf(&msg, "To: %s\r\n", sanitizeHeaderValue(strings.Join(to, ", ")))
+
+	// Cc
 	if len(cc) > 0 {
-		fmt.Fprintf(&msg, "Cc: %s\r\n", strings.Join(cc, ", "))
+		fmt.Fprintf(&msg, "Cc: %s\r\n", sanitizeHeaderValue(strings.Join(cc, ", ")))
 	}
-	fmt.Fprintf(&msg, "Subject: %s\r\n", subject)
+
+	// Message-ID (RFC 5322 §3.6.4 — required)
+	fmt.Fprintf(&msg, "Message-ID: %s\r\n", generateMessageID(from))
+
+	// Subject (RFC 2047 encoding for non-ASCII)
+	subject = sanitizeHeaderValue(subject)
+	if isASCII(subject) {
+		fmt.Fprintf(&msg, "Subject: %s\r\n", subject)
+	} else {
+		fmt.Fprintf(&msg, "Subject: %s\r\n", mime.QEncoding.Encode("utf-8", subject))
+	}
+
+	// Extra headers with folding for long values (e.g. References)
 	for k, v := range extraHeaders {
 		if v != "" {
-			fmt.Fprintf(&msg, "%s: %s\r\n", k, v)
+			v = sanitizeHeaderValue(v)
+			fmt.Fprintf(&msg, "%s: %s\r\n", k, foldHeader(v, len(k)+2))
 		}
 	}
+
+	// MIME headers
 	fmt.Fprintf(&msg, "MIME-Version: 1.0\r\n")
 	fmt.Fprintf(&msg, "Content-Type: text/plain; charset=UTF-8\r\n")
-	fmt.Fprintf(&msg, "\r\n")
-	fmt.Fprintf(&msg, "%s", body)
+
+	// Body with Content-Transfer-Encoding for non-ASCII (RFC 2045 §6)
+	if !isASCII(body) {
+		fmt.Fprintf(&msg, "Content-Transfer-Encoding: quoted-printable\r\n")
+		fmt.Fprintf(&msg, "\r\n")
+		var buf bytes.Buffer
+		w := quotedprintable.NewWriter(&buf)
+		w.Write([]byte(body))
+		w.Close()
+		msg.Write(buf.Bytes())
+	} else {
+		fmt.Fprintf(&msg, "\r\n")
+		fmt.Fprintf(&msg, "%s", body)
+	}
+
 	return []byte(msg.String())
 }
 

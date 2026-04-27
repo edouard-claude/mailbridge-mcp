@@ -9,6 +9,7 @@ import (
 	"github.com/edouard-claude/mailbridge-mcp/internal/config"
 	imappool "github.com/edouard-claude/mailbridge-mcp/internal/imap"
 	smtpsender "github.com/edouard-claude/mailbridge-mcp/internal/smtp"
+	goimap "github.com/emersion/go-imap/v2"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -71,8 +72,14 @@ func registerSendDraft(s *server.MCPServer, cfg *config.Config, pool *imappool.P
 			return mcp.NewToolResultError(fmt.Sprintf("get password: %v", err)), nil
 		}
 
-		if err := smtpsender.Send(acc, password, draft.To, draft.Cc, nil, draft.Subject, draft.Body); err != nil {
+		msg, err := smtpsender.Send(acc, password, draft.To, draft.Cc, nil, draft.Subject, draft.Body)
+		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("send failed: %v", err)), nil
+		}
+
+		// Copy to Sent folder via IMAP APPEND
+		if sentMailbox, err := imappool.FindSentMailbox(client); err == nil {
+			imappool.AppendMessage(client, sentMailbox, []goimap.Flag{goimap.FlagSeen}, msg)
 		}
 
 		// Delete the draft from Drafts folder

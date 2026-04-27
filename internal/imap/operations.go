@@ -2,6 +2,7 @@ package imap
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	goimap "github.com/emersion/go-imap/v2"
@@ -164,6 +165,41 @@ func AppendMessage(c *imapclient.Client, mailbox string, flags []goimap.Flag, ms
 		return fmt.Errorf("append to %s: %w", mailbox, err)
 	}
 	return nil
+}
+
+// FindSentMailbox detects the Sent folder for the account. It first checks
+// for the \Sent special-use attribute (RFC 6154), then falls back to common names.
+func FindSentMailbox(c *imapclient.Client) (string, error) {
+	mailboxes, err := c.List("", "*", &goimap.ListOptions{
+		ReturnSpecialUse: true,
+	}).Collect()
+	if err != nil {
+		// Fallback if SPECIAL-USE not supported
+		mailboxes, err = c.List("", "*", nil).Collect()
+		if err != nil {
+			return "", fmt.Errorf("IMAP list: %w", err)
+		}
+	}
+
+	// Check for \Sent attribute
+	for _, mb := range mailboxes {
+		for _, attr := range mb.Attrs {
+			if attr == goimap.MailboxAttrSent {
+				return mb.Mailbox, nil
+			}
+		}
+	}
+
+	// Fallback: match by last path component
+	for _, mb := range mailboxes {
+		parts := strings.Split(mb.Mailbox, string(mb.Delim))
+		last := strings.ToLower(parts[len(parts)-1])
+		if last == "sent" || last == "sent messages" {
+			return mb.Mailbox, nil
+		}
+	}
+
+	return "", fmt.Errorf("no Sent mailbox found")
 }
 
 // MailboxStatusInfo holds status information about a mailbox.
