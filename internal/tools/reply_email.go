@@ -90,8 +90,19 @@ func registerReplyEmail(s *server.MCPServer, cfg *config.Config, pool *imappool.
 			}
 		}
 
-		// Build references
-		references := original.MessageID
+		// Build threading headers (RFC 2822 §3.6.4):
+		//   In-Reply-To: <parent-id>
+		//   References:  <ref-1> <ref-2> ... <parent-id>
+		parentID := ensureAngleBrackets(original.MessageID)
+		var refs []string
+		for _, id := range original.References {
+			refs = append(refs, "<"+id+">")
+		}
+		if parentID != "" {
+			refs = append(refs, parentID)
+		}
+		references := strings.Join(refs, " ")
+		inReplyTo := parentID
 		subject := original.Subject
 
 		// Quote original body
@@ -108,12 +119,29 @@ func registerReplyEmail(s *server.MCPServer, cfg *config.Config, pool *imappool.
 			return mcp.NewToolResultError(fmt.Sprintf("get password: %v", err)), nil
 		}
 
-		if err := smtpsender.SendReply(acc, password, to, cc, subject, quotedBody.String(), original.MessageID, references); err != nil {
+		if err := smtpsender.SendReply(acc, password, to, cc, subject, quotedBody.String(), inReplyTo, references); err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("reply failed: %v", err)), nil
 		}
 
 		return mcp.NewToolResultText(fmt.Sprintf("Reply sent successfully from %s to %s.", acc.Email, original.From)), nil
 	})
+}
+
+// ensureAngleBrackets normalizes a Message-ID value to the RFC 5322 form
+// "<id@host>". IMAP envelopes return Message-IDs with or without brackets
+// depending on the server, so we always wrap them before emitting headers.
+func ensureAngleBrackets(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return ""
+	}
+	if !strings.HasPrefix(id, "<") {
+		id = "<" + id
+	}
+	if !strings.HasSuffix(id, ">") {
+		id = id + ">"
+	}
+	return id
 }
 
 // isSameEmail compares a potentially formatted address (e.g. "'Name' <user@host>")

@@ -18,6 +18,8 @@ type ParsedEmail struct {
 	Date        string
 	Subject     string
 	MessageID   string
+	InReplyTo   []string
+	References  []string
 	Flags       []goimap.Flag
 	Body        string
 	Attachments []Attachment
@@ -94,6 +96,13 @@ func (p *ParsedEmail) parseBody(body []byte, maxChars int) {
 		return
 	}
 
+	if ids, err := mr.Header.MsgIDList("In-Reply-To"); err == nil {
+		p.InReplyTo = ids
+	}
+	if ids, err := mr.Header.MsgIDList("References"); err == nil {
+		p.References = ids
+	}
+
 	for {
 		part, err := mr.NextPart()
 		if err == io.EOF {
@@ -131,6 +140,12 @@ func FormatEmail(parsed *ParsedEmail) string {
 	fmt.Fprintf(&sb, "Date: %s\n", parsed.Date)
 	fmt.Fprintf(&sb, "Subject: %s\n", parsed.Subject)
 	fmt.Fprintf(&sb, "Message-ID: %s\n", parsed.MessageID)
+	if len(parsed.InReplyTo) > 0 {
+		fmt.Fprintf(&sb, "In-Reply-To: %s\n", formatMsgIDList(parsed.InReplyTo))
+	}
+	if len(parsed.References) > 0 {
+		fmt.Fprintf(&sb, "References: %s\n", formatMsgIDList(parsed.References))
+	}
 	fmt.Fprintf(&sb, "Flags: %s\n", formatFlags(parsed.Flags))
 	fmt.Fprintf(&sb, "\n---\n\n%s", parsed.Body)
 
@@ -141,6 +156,14 @@ func FormatEmail(parsed *ParsedEmail) string {
 		}
 	}
 	return sb.String()
+}
+
+func formatMsgIDList(ids []string) string {
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		parts = append(parts, "<"+id+">")
+	}
+	return strings.Join(parts, " ")
 }
 
 func formatAddress(a goimap.Address) string {
