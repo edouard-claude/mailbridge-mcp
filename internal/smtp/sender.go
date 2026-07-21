@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/rand"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"mime"
@@ -90,14 +91,21 @@ func foldHeader(value string, prefixLen int) string {
 	return buf.String()
 }
 
-// Send sends a plain text email via SMTP. Returns the built message for IMAP Sent copy.
-func Send(acc *config.Account, password string, to, cc, bcc []string, subject, body string) ([]byte, error) {
+// Attachment represents a file to attach to an email.
+type Attachment struct {
+	Filename    string
+	ContentType string
+	Data        []byte
+}
+
+// Send sends an email via SMTP. Returns the built message for IMAP Sent copy.
+func Send(acc *config.Account, password string, to, cc, bcc []string, subject, body string, attachments []Attachment) ([]byte, error) {
 	recipients := make([]string, 0, len(to)+len(cc)+len(bcc))
 	recipients = append(recipients, to...)
 	recipients = append(recipients, cc...)
 	recipients = append(recipients, bcc...)
 
-	msg := BuildMessage(acc.Email, to, cc, subject, body, nil)
+	msg := BuildMessage(acc.Email, to, cc, subject, body, attachments, nil)
 
 	var err error
 	if acc.SMTP.TLS {
@@ -110,7 +118,7 @@ func Send(acc *config.Account, password string, to, cc, bcc []string, subject, b
 
 // SendReply sends a reply email with proper In-Reply-To and References headers.
 // Returns the built message for IMAP Sent copy.
-func SendReply(acc *config.Account, password string, to, cc []string, subject, body, inReplyTo, references string) ([]byte, error) {
+func SendReply(acc *config.Account, password string, to, cc []string, subject, body, inReplyTo, references string, attachments []Attachment) ([]byte, error) {
 	recipients := make([]string, 0, len(to)+len(cc))
 	recipients = append(recipients, to...)
 	recipients = append(recipients, cc...)
@@ -124,7 +132,7 @@ func SendReply(acc *config.Account, password string, to, cc []string, subject, b
 		subject = "Re: " + subject
 	}
 
-	msg := BuildMessage(acc.Email, to, cc, subject, body, extraHeaders)
+	msg := BuildMessage(acc.Email, to, cc, subject, body, attachments, extraHeaders)
 
 	var err error
 	if acc.SMTP.TLS {
@@ -136,7 +144,9 @@ func SendReply(acc *config.Account, password string, to, cc []string, subject, b
 }
 
 // BuildMessage constructs an RFC 5322 compliant MIME message.
-func BuildMessage(from string, to, cc []string, subject, body string, extraHeaders map[string]string) []byte {
+// When attachments is non-empty, the message uses multipart/mixed with
+// the text body as the first part and each attachment base64-encoded.
+func BuildMessage(from string, to, cc []string, subject, body string, attachments []Attachment, extraHeaders map[string]string) []byte {
 	var msg strings.Builder
 
 	// Date (RFC 5322 §3.6 — required)
@@ -174,23 +184,90 @@ func BuildMessage(from string, to, cc []string, subject, body string, extraHeade
 
 	// MIME headers
 	fmt.Fprintf(&msg, "MIME-Version: 1.0\r\n")
-	fmt.Fprintf(&msg, "Content-Type: text/plain; charset=UTF-8\r\n")
 
-	// Body with Content-Transfer-Encoding for non-ASCII (RFC 2045 §6)
+	if len(attachments) == 0 {
+		buildSimpleBody(&msg, body)
+	} else {
+		buildMultipartMixed(&msg, body, attachments)
+	}
+
+	return []byte(msg.String())
+}
+
+// buildSimpleBody writes a text/plain body (with quoted-printable for non-ASCII).
+func buildSimpleBody(msg *strings.Builder, body string) {
+	fmt.Fprintf(msg, "Content-Type: text/plain; charset=UTF-8\r\n")
 	if !isASCII(body) {
-		fmt.Fprintf(&msg, "Content-Transfer-Encoding: quoted-printable\r\n")
-		fmt.Fprintf(&msg, "\r\n")
+		fmt.Fprintf(msg, "Content-Transfer-Encoding: quoted-printable\r\n")
+		fmt.Fprintf(msg, "\r\n")
 		var buf bytes.Buffer
 		w := quotedprintable.NewWriter(&buf)
 		w.Write([]byte(body))
 		w.Close()
 		msg.Write(buf.Bytes())
 	} else {
-		fmt.Fprintf(&msg, "\r\n")
-		fmt.Fprintf(&msg, "%s", body)
+		fmt.Fprintf(msg, "\r\n")
+		fmt.Fprintf(msg, "%s", body)
+	}
+}
+
+// buildMultipartMixed builds a multipart/mixed MIME message with a text/plain
+// part followed by base64-encoded attachment parts.
+func buildMultipartMixed(msg *strings.Builder, body string, attachments []Attachment) {
+	boundary := fmt.Sprintf("==boundary_%s_%d", hex.EncodeToString(randomBytes(12)), time.Now().UnixNano())
+	fmt.Fprintf(msg, "Content-Type: multipart/mixed; boundary=%s\r\n", boundary)
+	fmt.Fprintf(msg, "\r\n")
+
+	// First part: text body
+	fmt.Fprintf(msg, "--%s\r\n", boundary)
+	buildSimpleBody(msg, body)
+
+	// Attachment parts
+	for _, att := range attachments {
+		fmt.Fprintf(msg, "\r\n--%s\r\n", boundary)
+		ct := att.ContentType
+		if ct == "" {
+			ct = "application/octet-stream"
+		}
+		filename := sanitizeHeaderValue(att.Filename)
+		if isASCII(filename) {
+			fmt.Fprintf(msg, "Content-Type: %s; name=%s\r\n", ct, filename)
+		} else {
+			fmt.Fprintf(msg, "Content-Type: %s; name=%s\r\n", ct, mime.QEncoding.Encode("utf-8", filename))
+		}
+		fmt.Fprintf(msg, "Content-Disposition: attachment; filename=%s\r\n", mime.QEncoding.Encode("utf-8", filename))
+		fmt.Fprintf(msg, "Content-Transfer-Encoding: base64\r\n")
+		fmt.Fprintf(msg, "\r\n")
+		encoded := base64.StdEncoding.EncodeToString(att.Data)
+		for i := 0; i < len(encoded); i += 76 {
+			end := i + 76
+			if end > len(encoded) {
+				end = len(encoded)
+			}
+			fmt.Fprintf(msg, "%s\r\n", encoded[i:end])
+		}
 	}
 
-	return []byte(msg.String())
+	// Closing boundary
+	fmt.Fprintf(msg, "--%s--\r\n", boundary)
+}
+
+func randomBytes(n int) []byte {
+	b := make([]byte, n)
+	rand.Read(b)
+	return b
+}
+
+// SendRaw sends a pre-built RFC 5322 message via SMTP.
+// Returns the message unchanged for IMAP Sent copy.
+func SendRaw(acc *config.Account, password string, recipients []string, msg []byte) ([]byte, error) {
+	var err error
+	if acc.SMTP.TLS {
+		err = sendTLS(acc, password, recipients, msg)
+	} else {
+		err = sendStartTLS(acc, password, recipients, msg)
+	}
+	return msg, err
 }
 
 func sendStartTLS(acc *config.Account, password string, recipients []string, msg []byte) error {

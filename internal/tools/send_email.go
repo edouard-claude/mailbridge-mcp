@@ -2,6 +2,8 @@ package tools
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -16,7 +18,7 @@ import (
 
 func registerSendEmail(s *server.MCPServer, cfg *config.Config, pool *imappool.Pool) {
 	tool := mcp.NewTool("send_email",
-		mcp.WithDescription("Send a new email from a configured account. Supports plain text body, CC, BCC. Does NOT support attachments."),
+		mcp.WithDescription("Send a new email from a configured account. Supports plain text body, CC, BCC, and attachments. Attachments are passed as a JSON array of objects with 'filename', 'content_base64', and optional 'mime_type' fields."),
 		mcp.WithString("account_id",
 			mcp.Description("Account to send from"),
 			mcp.Required(),
@@ -38,6 +40,9 @@ func registerSendEmail(s *server.MCPServer, cfg *config.Config, pool *imappool.P
 		mcp.WithString("body",
 			mcp.Description("Plain text email body"),
 			mcp.Required(),
+		),
+		mcp.WithString("attachments",
+			mcp.Description("JSON array of attachments: [{\"filename\":\"...\", \"content_base64\":\"...\", \"mime_type\":\"...\"}]"),
 		),
 		mcp.WithReadOnlyHintAnnotation(false),
 		mcp.WithDestructiveHintAnnotation(true),
@@ -73,12 +78,17 @@ func registerSendEmail(s *server.MCPServer, cfg *config.Config, pool *imappool.P
 		cc := splitAndTrim(req.GetString("cc", ""))
 		bcc := splitAndTrim(req.GetString("bcc", ""))
 
+		attachments, err := parseAttachments(req.GetString("attachments", ""))
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("invalid attachments: %v", err)), nil
+		}
+
 		password, err := auth.GetPassword(acc.Auth)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("get password for %s: %v", acc.Email, err)), nil
 		}
 
-		msg, err := smtpsender.Send(acc, password, to, cc, bcc, subject, body)
+		msg, err := smtpsender.Send(acc, password, to, cc, bcc, subject, body, attachments)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("send failed: %v", err)), nil
 		}
@@ -107,4 +117,36 @@ func splitAndTrim(s string) []string {
 		}
 	}
 	return result
+}
+
+type attachmentJSON struct {
+	Filename      string `json:"filename"`
+	ContentBase64 string `json:"content_base64"`
+	MimeType      string `json:"mime_type"`
+}
+
+func parseAttachments(jsonStr string) ([]smtpsender.Attachment, error) {
+	if strings.TrimSpace(jsonStr) == "" {
+		return nil, nil
+	}
+	var raw []attachmentJSON
+	if err := json.Unmarshal([]byte(jsonStr), &raw); err != nil {
+		return nil, fmt.Errorf("invalid JSON: %w", err)
+	}
+	attachments := make([]smtpsender.Attachment, 0, len(raw))
+	for _, a := range raw {
+		if a.Filename == "" {
+			return nil, fmt.Errorf("attachment missing filename")
+		}
+		data, err := base64.StdEncoding.DecodeString(a.ContentBase64)
+		if err != nil {
+			return nil, fmt.Errorf("attachment %q: invalid base64: %w", a.Filename, err)
+		}
+		attachments = append(attachments, smtpsender.Attachment{
+			Filename:    a.Filename,
+			ContentType: a.MimeType,
+			Data:        data,
+		})
+	}
+	return attachments, nil
 }

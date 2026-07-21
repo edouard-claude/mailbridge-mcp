@@ -1,0 +1,48 @@
+version: 2
+
+project_name: mailbridge-mcp
+
+builds:
+  - main: ./cmd/mailbridge-mcp
+    binary: mailbridge-mcp
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+homebrew_casks:
+  - repository:
+      owner: edouard-claude
+      name: homebrew-tap
+    homepage: "https://github.com/edouard-claude/mailbridge-mcp"
+    description: "MCP server for email (IMAP + SMTP) used by Claude Code"
+    caveats: |
+      Run the interactive setup to add your first account:
+        mailbridge-mcp setup
+
+      Then register the MCP server in ~/.claude.json
+      (see README for the JSON snippet to add under mcpServers).
+
+release:
+  prerelease: auto
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"

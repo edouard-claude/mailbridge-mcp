@@ -1,14 +1,26 @@
 package imap
 
 import (
+	"bytes"
 	"fmt"
 	"io"
+	"mime"
 	"strings"
 	"time"
 
 	goimap "github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
+	message "github.com/emersion/go-message"
+	"github.com/emersion/go-message/charset" // also registers non-UTF-8 charsets
 	"github.com/emersion/go-message/mail"
+)
+
+// Body formats accepted by FetchEmail / read_email.
+const (
+	BodyFormatAuto = "auto" // plain text if present, otherwise HTML converted to text
+	BodyFormatText = "text" // plain text only (or HTML converted to text)
+	BodyFormatHTML = "html" // raw HTML source
+	BodyFormatBoth = "both" // text rendering + raw HTML
 )
 
 type ParsedEmail struct {
@@ -21,7 +33,10 @@ type ParsedEmail struct {
 	InReplyTo   []string
 	References  []string
 	Flags       []goimap.Flag
-	Body        string
+	Body        string   // rendering selected by the requested format
+	TextBody    string   // text/plain parts, concatenated
+	HTMLBody    string   // text/html parts, concatenated
+	Links       []string // actionable links found in the HTML parts
 	Attachments []Attachment
 }
 
@@ -31,8 +46,12 @@ type Attachment struct {
 	MimeType string
 }
 
-// FetchEmail fetches and parses a single email by UID.
-func FetchEmail(c *imapclient.Client, mailbox string, uid uint32, maxBodyChars int) (*ParsedEmail, error) {
+// maxMIMEDepth bounds the recursion on nested forwarded messages.
+const maxMIMEDepth = 12
+
+// FetchEmail fetches and parses a single email by UID. format selects the body
+// rendering (see BodyFormat* constants); an empty value means BodyFormatAuto.
+func FetchEmail(c *imapclient.Client, mailbox string, uid uint32, maxBodyChars int, format string) (*ParsedEmail, error) {
 	if _, err := c.Select(mailbox, nil).Wait(); err != nil {
 		return nil, fmt.Errorf("select %s: %w", mailbox, err)
 	}
@@ -81,53 +100,189 @@ func FetchEmail(c *imapclient.Client, mailbox string, uid uint32, maxBodyChars i
 	// Parse MIME body
 	bodyBytes := msg.FindBodySection(bodySection)
 	if bodyBytes != nil {
-		parsed.parseBody(bodyBytes, maxBodyChars)
+		parsed.parseBody(bodyBytes, maxBodyChars, format)
 	}
 
 	return parsed, nil
 }
 
-func (p *ParsedEmail) parseBody(body []byte, maxChars int) {
-	r := strings.NewReader(string(body))
-	mr, err := mail.CreateReader(r)
-	if err != nil {
-		// Fallback: use raw body
+func (p *ParsedEmail) parseBody(body []byte, maxChars int, format string) {
+	// Header-level metadata (In-Reply-To / References) comes from the
+	// top-level message only.
+	if mr, err := mail.CreateReader(bytes.NewReader(body)); err == nil {
+		if ids, err := mr.Header.MsgIDList("In-Reply-To"); err == nil {
+			p.InReplyTo = ids
+		}
+		if ids, err := mr.Header.MsgIDList("References"); err == nil {
+			p.References = ids
+		}
+		mr.Close()
+	}
+
+	entity, err := message.Read(bytes.NewReader(body))
+	if err != nil && message.IsUnknownCharset(err) {
+		// Unknown charset is recoverable: entity is still usable.
+		err = nil
+	}
+	if err != nil || entity == nil {
+		// Fallback: raw body, better than nothing.
 		p.Body = truncate(string(body), maxChars)
 		return
 	}
 
-	if ids, err := mr.Header.MsgIDList("In-Reply-To"); err == nil {
-		p.InReplyTo = ids
-	}
-	if ids, err := mr.Header.MsgIDList("References"); err == nil {
-		p.References = ids
+	var text, htm strings.Builder
+	p.walk(entity, &text, &htm, 0)
+
+	p.TextBody = strings.TrimSpace(text.String())
+	p.HTMLBody = strings.TrimSpace(htm.String())
+	p.Links = ExtractLinks(p.HTMLBody)
+	p.Body = truncate(p.render(format), maxChars)
+}
+
+// walk traverses the MIME tree, descending into multipart/* containers and
+// into message/rfc822 parts (forwarded messages), collecting every text/plain
+// and text/html leaf.
+func (p *ParsedEmail) walk(e *message.Entity, text, htm *strings.Builder, depth int) {
+	if e == nil || depth > maxMIMEDepth {
+		return
 	}
 
-	for {
-		part, err := mr.NextPart()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			break
-		}
+	mediaType, _, err := e.Header.ContentType()
+	if err != nil {
+		mediaType = "text/plain"
+	}
+	mediaType = strings.ToLower(mediaType)
 
-		switch h := part.Header.(type) {
-		case *mail.InlineHeader:
-			ct, _, _ := h.ContentType()
-			if strings.HasPrefix(ct, "text/plain") && p.Body == "" {
-				data, _ := io.ReadAll(part.Body)
-				p.Body = truncate(string(data), maxChars)
+	// Container: recurse into each child part.
+	if mr := e.MultipartReader(); mr != nil {
+		for {
+			part, err := mr.NextPart()
+			if err == io.EOF {
+				break
 			}
-		case *mail.AttachmentHeader:
-			filename, _ := h.Filename()
-			ct, _, _ := h.ContentType()
-			p.Attachments = append(p.Attachments, Attachment{
-				Filename: filename,
-				MimeType: ct,
-			})
+			if err != nil {
+				if message.IsUnknownCharset(err) && part != nil {
+					p.walk(part, text, htm, depth+1)
+					continue
+				}
+				break
+			}
+			p.walk(part, text, htm, depth+1)
+		}
+		return
+	}
+
+	// Embedded message (forwarded mail): parse it as a full message.
+	if mediaType == "message/rfc822" || mediaType == "message/global" {
+		inner, err := message.Read(e.Body)
+		if err != nil && message.IsUnknownCharset(err) {
+			err = nil
+		}
+		if err == nil && inner != nil {
+			appendSection(text, forwardedHeaderSummary(inner))
+			p.walk(inner, text, htm, depth+1)
+		}
+		return
+	}
+
+	// Leaf part.
+	disp, dispParams, _ := e.Header.ContentDisposition()
+	isAttachment := strings.EqualFold(disp, "attachment")
+
+	if isAttachment || !strings.HasPrefix(mediaType, "text/") {
+		filename := partFilename(e, dispParams)
+		if filename == "" && !isAttachment {
+			return // inline image without a name: not worth listing
+		}
+		p.Attachments = append(p.Attachments, Attachment{
+			Filename: filename,
+			MimeType: mediaType,
+		})
+		return
+	}
+
+	data, err := io.ReadAll(e.Body)
+	if err != nil {
+		return
+	}
+	switch {
+	case strings.HasPrefix(mediaType, "text/html"):
+		appendSection(htm, string(data))
+		appendSection(text, htmlToText(string(data)))
+	default:
+		appendSection(text, string(data))
+	}
+}
+
+// render picks the body representation matching the requested format.
+func (p *ParsedEmail) render(format string) string {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case BodyFormatHTML:
+		if p.HTMLBody != "" {
+			return p.HTMLBody
+		}
+		return p.TextBody
+	case BodyFormatBoth:
+		if p.HTMLBody == "" {
+			return p.TextBody
+		}
+		if p.TextBody == "" {
+			return p.HTMLBody
+		}
+		return p.TextBody + "\n\n--- HTML source ---\n\n" + p.HTMLBody
+	default: // auto / text
+		if p.TextBody != "" {
+			return p.TextBody
+		}
+		return htmlToText(p.HTMLBody)
+	}
+}
+
+// forwardedHeaderSummary renders the headers of an embedded message so the
+// forwarded envelope (real sender, reply-to, subject) is not lost.
+func forwardedHeaderSummary(e *message.Entity) string {
+	var sb strings.Builder
+	sb.WriteString("--- Message transféré ---")
+	for _, k := range []string{"From", "Reply-To", "To", "Date", "Subject"} {
+		if v := strings.TrimSpace(e.Header.Get(k)); v != "" {
+			fmt.Fprintf(&sb, "\n%s: %s", k, decodeHeader(v))
 		}
 	}
+	return sb.String()
+}
+
+// partFilename resolves an attachment name from Content-Disposition, falling
+// back to the legacy Content-Type "name" parameter.
+func partFilename(e *message.Entity, dispParams map[string]string) string {
+	if n := strings.TrimSpace(dispParams["filename"]); n != "" {
+		return decodeHeader(n)
+	}
+	if _, ctParams, err := e.Header.ContentType(); err == nil {
+		if n := strings.TrimSpace(ctParams["name"]); n != "" {
+			return decodeHeader(n)
+		}
+	}
+	return ""
+}
+
+func decodeHeader(v string) string {
+	dec := new(mime.WordDecoder)
+	dec.CharsetReader = charset.Reader
+	if out, err := dec.DecodeHeader(v); err == nil {
+		return out
+	}
+	return v
+}
+
+func appendSection(sb *strings.Builder, s string) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return
+	}
+	if sb.Len() > 0 {
+		sb.WriteString("\n\n")
+	}
+	sb.WriteString(s)
 }
 
 func FormatEmail(parsed *ParsedEmail) string {
@@ -148,6 +303,13 @@ func FormatEmail(parsed *ParsedEmail) string {
 	}
 	fmt.Fprintf(&sb, "Flags: %s\n", formatFlags(parsed.Flags))
 	fmt.Fprintf(&sb, "\n---\n\n%s", parsed.Body)
+
+	if len(parsed.Links) > 0 {
+		fmt.Fprintf(&sb, "\n\n---\nLinks:\n")
+		for _, l := range parsed.Links {
+			fmt.Fprintf(&sb, "- %s\n", l)
+		}
+	}
 
 	if len(parsed.Attachments) > 0 {
 		fmt.Fprintf(&sb, "\n\n---\nAttachments:\n")
@@ -179,4 +341,38 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max] + "\n... [truncated]"
+}
+
+// FetchRawBody fetches the raw RFC 5322 body of an email by UID.
+// This preserves the original MIME structure including attachments.
+func FetchRawBody(c *imapclient.Client, mailbox string, uid uint32) ([]byte, error) {
+	if _, err := c.Select(mailbox, nil).Wait(); err != nil {
+		return nil, fmt.Errorf("select %s: %w", mailbox, err)
+	}
+
+	uidSet := goimap.UIDSet{}
+	uidSet.AddNum(goimap.UID(uid))
+
+	bodySection := &goimap.FetchItemBodySection{}
+	fetchOptions := &goimap.FetchOptions{
+		BodySection: []*goimap.FetchItemBodySection{bodySection},
+		UID:         true,
+	}
+
+	messages, err := c.Fetch(uidSet, fetchOptions).Collect()
+	if err != nil {
+		return nil, fmt.Errorf("IMAP fetch UID %d: %w", uid, err)
+	}
+
+	if len(messages) == 0 {
+		return nil, fmt.Errorf("email UID %d not found in %s", uid, mailbox)
+	}
+
+	msg := messages[0]
+	bodyBytes := msg.FindBodySection(bodySection)
+	if bodyBytes == nil {
+		return nil, fmt.Errorf("email UID %d has no body", uid)
+	}
+
+	return bodyBytes, nil
 }

@@ -16,7 +16,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-var version = "1.0.0"
+var version = "dev"
 
 func main() {
 	if len(os.Args) < 2 {

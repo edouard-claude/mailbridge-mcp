@@ -1,2 +1,5 @@
 # Binary (root only)
 /mailbridge-mcp
+
+# GoReleaser output
+/dist/

@@ -56,15 +56,26 @@ func registerSendDraft(s *server.MCPServer, cfg *config.Config, pool *imappool.P
 			return mcp.NewToolResultError(fmt.Sprintf("IMAP connection failed: %v", err)), nil
 		}
 
-		// Fetch the draft
-		draft, err := imappool.FetchEmail(client, draftsMailbox, uint32(uid), 0)
+		// Fetch the draft raw body to preserve attachments and MIME structure
+		rawMsg, err := imappool.FetchRawBody(client, draftsMailbox, uint32(uid))
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("fetch draft failed: %v", err)), nil
+		}
+
+		// Also fetch headers to validate recipients
+		draft, err := imappool.FetchEmail(client, draftsMailbox, uint32(uid), 0, imappool.BodyFormatAuto)
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("fetch draft headers failed: %v", err)), nil
 		}
 
 		if len(draft.To) == 0 {
 			return mcp.NewToolResultError("draft has no recipients (To field is empty)"), nil
 		}
+
+		// Build recipient list for SMTP envelope
+		recipients := make([]string, 0, len(draft.To)+len(draft.Cc))
+		recipients = append(recipients, draft.To...)
+		recipients = append(recipients, draft.Cc...)
 
 		// Send via SMTP
 		password, err := auth.GetPassword(acc.Auth)
@@ -72,7 +83,7 @@ func registerSendDraft(s *server.MCPServer, cfg *config.Config, pool *imappool.P
 			return mcp.NewToolResultError(fmt.Sprintf("get password: %v", err)), nil
 		}
 
-		msg, err := smtpsender.Send(acc, password, draft.To, draft.Cc, nil, draft.Subject, draft.Body)
+		msg, err := smtpsender.SendRaw(acc, password, recipients, rawMsg)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("send failed: %v", err)), nil
 		}

@@ -12,7 +12,7 @@ import (
 
 func registerReadEmail(s *server.MCPServer, cfg *config.Config, pool *imappool.Pool) {
 	tool := mcp.NewTool("read_email",
-		mcp.WithDescription("Read the full content of an email by its UID. Returns headers (from, to, cc, date, subject) and body (plain text preferred, HTML stripped if no plain text). Lists attachments with filenames and sizes but does not download them."),
+		mcp.WithDescription("Read the full content of an email by its UID. Returns headers (from, to, cc, date, subject) and body. Walks the whole MIME tree, including forwarded messages (message/rfc822), so nothing is lost on multi-level forwards. Use body_format to choose the rendering: 'auto' (plain text, falling back to HTML converted to text), 'html' (raw HTML source), 'both'. Lists attachments with filenames and mime types but does not download them."),
 		mcp.WithString("account_id",
 			mcp.Description("Account identifier"),
 			mcp.Required(),
@@ -25,7 +25,11 @@ func registerReadEmail(s *server.MCPServer, cfg *config.Config, pool *imappool.P
 			mcp.Required(),
 		),
 		mcp.WithNumber("max_body_chars",
-			mcp.Description("Max characters to return for body (default: 10000)"),
+			mcp.Description("Max characters to return for body (default: 10000). Use a large value or 0 for no truncation when parsing HTML emails."),
+		),
+		mcp.WithString("body_format",
+			mcp.Description("Body rendering: 'auto' (default, text preferred then HTML-to-text), 'text', 'html' (raw HTML source), 'both'"),
+			mcp.Enum("auto", "text", "html", "both"),
 		),
 		mcp.WithReadOnlyHintAnnotation(true),
 		mcp.WithDestructiveHintAnnotation(false),
@@ -49,13 +53,14 @@ func registerReadEmail(s *server.MCPServer, cfg *config.Config, pool *imappool.P
 			return mcp.NewToolResultError("uid is required"), nil
 		}
 		maxBodyChars := req.GetInt("max_body_chars", cfg.Defaults.BodyMaxChars)
+		bodyFormat := req.GetString("body_format", imappool.BodyFormatAuto)
 
 		client, err := pool.Get(accountID)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("IMAP connection failed for %s: %v", accountID, err)), nil
 		}
 
-		parsed, err := imappool.FetchEmail(client, mailbox, uint32(uid), maxBodyChars)
+		parsed, err := imappool.FetchEmail(client, mailbox, uint32(uid), maxBodyChars, bodyFormat)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("read email failed: %v", err)), nil
 		}

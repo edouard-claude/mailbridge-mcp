@@ -34,6 +34,9 @@ func registerSaveDraft(s *server.MCPServer, cfg *config.Config, pool *imappool.P
 			mcp.Description("Plain text email body"),
 			mcp.Required(),
 		),
+		mcp.WithString("attachments",
+			mcp.Description("JSON array of attachments: [{\"filename\":\"...\", \"content_base64\":\"...\", \"mime_type\":\"...\"}]"),
+		),
 		mcp.WithString("mailbox",
 			mcp.Description("Drafts mailbox name (default: 'Drafts')"),
 		),
@@ -67,7 +70,12 @@ func registerSaveDraft(s *server.MCPServer, cfg *config.Config, pool *imappool.P
 		cc := splitAndTrim(req.GetString("cc", ""))
 		draftsMailbox := req.GetString("mailbox", "Drafts")
 
-		msg := smtpsender.BuildMessage(acc.Email, to, cc, subject, body, nil)
+		attachments, err := parseAttachments(req.GetString("attachments", ""))
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("invalid attachments: %v", err)), nil
+		}
+
+		msg := smtpsender.BuildMessage(acc.Email, to, cc, subject, body, attachments, nil)
 
 		client, err := pool.Get(accountID)
 		if err != nil {

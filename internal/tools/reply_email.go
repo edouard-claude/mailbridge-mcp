@@ -17,7 +17,7 @@ import (
 
 func registerReplyEmail(s *server.MCPServer, cfg *config.Config, pool *imappool.Pool) {
 	tool := mcp.NewTool("reply_email",
-		mcp.WithDescription("Reply to an existing email. Sets In-Reply-To and References headers correctly. Prefixes subject with 'Re:' if not already present. Quotes the original message body."),
+		mcp.WithDescription("Reply to an existing email. Sets In-Reply-To and References headers correctly. Prefixes subject with 'Re:' if not already present. Quotes the original message body. Supports attachments."),
 		mcp.WithString("account_id",
 			mcp.Description("Account to reply from"),
 			mcp.Required(),
@@ -35,6 +35,9 @@ func registerReplyEmail(s *server.MCPServer, cfg *config.Config, pool *imappool.
 		),
 		mcp.WithBoolean("reply_all",
 			mcp.Description("Reply to all recipients (default: false)"),
+		),
+		mcp.WithString("attachments",
+			mcp.Description("JSON array of attachments: [{\"filename\":\"...\", \"content_base64\":\"...\", \"mime_type\":\"...\"}]"),
 		),
 		mcp.WithReadOnlyHintAnnotation(false),
 		mcp.WithDestructiveHintAnnotation(true),
@@ -70,7 +73,7 @@ func registerReplyEmail(s *server.MCPServer, cfg *config.Config, pool *imappool.
 			return mcp.NewToolResultError(fmt.Sprintf("IMAP connection failed: %v", err)), nil
 		}
 
-		original, err := imappool.FetchEmail(client, mailbox, uint32(uid), 0)
+		original, err := imappool.FetchEmail(client, mailbox, uint32(uid), 0, imappool.BodyFormatAuto)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("fetch original email failed: %v", err)), nil
 		}
@@ -120,7 +123,12 @@ func registerReplyEmail(s *server.MCPServer, cfg *config.Config, pool *imappool.
 			return mcp.NewToolResultError(fmt.Sprintf("get password: %v", err)), nil
 		}
 
-		msg, err := smtpsender.SendReply(acc, password, to, cc, subject, quotedBody.String(), inReplyTo, references)
+		attachments, err := parseAttachments(req.GetString("attachments", ""))
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("invalid attachments: %v", err)), nil
+		}
+
+		msg, err := smtpsender.SendReply(acc, password, to, cc, subject, quotedBody.String(), inReplyTo, references, attachments)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("reply failed: %v", err)), nil
 		}
