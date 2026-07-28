@@ -22,8 +22,7 @@ Must return JSON with `serverInfo`. If silent crash: check `go vet ./...` and `g
 
 ## Config
 
-- **Location:** `~/.config/mailbridge/accounts.json` (confirmed in `config.Load()` at `internal/config/config.go:73`)
-- **CLAUDE.md is wrong** — it says `~/.config/mailbridge-mcp/config.yaml`. The real path is `~/.config/mailbridge/accounts.json`.
+- **Location:** `~/.config/mailbridge/accounts.json` — JSON, not YAML (confirmed in `config.Load()` at `internal/config/config.go:73`)
 - Passwords: macOS Keychain (service `mailbridge-mcp`, account = email address). Also supports `env` auth type via `AuthConfig.EnvVariable`.
 - `setup` replaces accounts by ID in place (same ID = update, new ID = append).
 - Config is JSON (not YAML), with structure:
@@ -108,9 +107,9 @@ Key conventions:
 - Tools that send email (send_email, reply_email, send_draft) also copy the sent message to the Sent folder via `imappool.FindSentMailbox()` + `imappool.AppendMessage()`
 - Error messages include the operation name, UID, mailbox, or account for debugging
 
-## Complete Tool List (17 tools)
+## Complete Tool List (16 tools)
 
-**Read (6):** `list_accounts`, `list_mailboxes`, `search_emails`, `read_email`, `mailbox_status`
+**Read (5):** `list_accounts`, `list_mailboxes`, `search_emails`, `read_email`, `mailbox_status`
 **Write — email (4):** `send_email`, `reply_email`, `save_draft`, `send_draft`
 **Write — mailbox (4):** `move_email`, `copy_email`, `mark_email`, `delete_email`
 **Write — folder (3):** `create_mailbox`, `rename_mailbox`, `delete_mailbox`
@@ -126,10 +125,18 @@ Shared helper: `splitAndTrim()` in `send_email.go` — splits comma-separated st
 - After search, does a FETCH for envelopes+flags to build `EmailSummary`
 - Sorts by UID descending with insertion sort (small N)
 
-### Fetch (`fetch.go`)
-- `FetchEmail()`: SELECT mailbox → FETCH by UID with envelope+flags+body → parse MIME
-- `parseBody()`: uses `go-message/mail.CreateReader()` — prefers `text/plain`, extracts `In-Reply-To`/`References` from MIME headers, lists attachments
-- `FormatEmail()`: text format with headers, body, and attachment list
+### Fetch (`fetch.go` + `html.go`)
+- `FetchEmail(c, mailbox, uid, maxBodyChars, format)`: SELECT → FETCH by UID with envelope+flags+body → parse MIME
+- `parseBody()`: walks the **whole** MIME tree via `message.Read()` + `walk()`, recursing into `multipart/*` **and `message/rfc822`** (forwarded mails), depth-capped at `maxMIMEDepth`. Collects every `text/plain` and `text/html` leaf.
+  - Why it matters: mails forwarded 3–4 times with an HTML-only payload used to return an **empty body** — the old code only kept the first `text/plain` part and never descended into embedded messages.
+  - `In-Reply-To`/`References` still come from the top-level header via `mail.CreateReader()`.
+  - Forwarded envelopes are summarized by `forwardedHeaderSummary()` so the real sender/Reply-To survives.
+- Body formats (`BodyFormat*` consts): `auto` (text, else HTML→text), `text`, `html` (raw source), `both`. Exposed as `body_format` on `read_email`.
+- `htmlToText()` (`html.go`): strips script/style, maps block tags to newlines, rewrites `<a href>` as `label (url)`.
+  **Careful:** the tag-stripping pass runs *after* link rewriting — never emit `<...>` there, it gets eaten (caught by `TestHTMLToText`).
+- `ExtractLinks()` (`html.go`): actionable links only — `mailto:`/`tel:` first, then URLs, deduped, tracker hosts and `unsubscribe`-style URLs dropped, capped at `maxExtractedLinks` and `maxPerHost`. Surfaces reply relays such as `@messagerie.leboncoin.fr`.
+- `FormatEmail()`: headers, body, `Links:` section, attachment list
+- Non-UTF-8 charsets are registered via `go-message/charset`; `decodeHeader()` decodes RFC 2047 encoded-words.
 - `truncate()`: appends `"\n... [truncated]"` when body exceeds `maxBodyChars`
 - `formatAddress()`: `Name <mailbox@host>` if name present, otherwise bare email
 
@@ -148,7 +155,8 @@ Shared helper: `splitAndTrim()` in `send_email.go` — splits comma-separated st
 ## SMTP Patterns (`sender.go`)
 
 - **`extractEmail(addr)`**: Uses `net/mail.ParseAddress()` to strip display names. **Always use before `RCPT TO`** — SMTP only accepts bare addresses. Has a manual angle-bracket fallback.
-- **`Send()` / `SendReply()`**: Build message → send via TLS or StartTLS → return raw message bytes for IMAP Sent copy
+- **`Send()` / `SendReply()`**: Build message → send via TLS or StartTLS → return raw message bytes for IMAP Sent copy. Both take an attachments slice (`send_email`, `reply_email`, `save_draft` expose it as a JSON array param: `filename`, `content_base64`, `mime_type`).
+- **`SendRaw()`**: sends an already-built MIME message as-is. Used by `send_draft`, which fetches the draft with `FetchRawBody()` so attachments and structure survive the round-trip.
 - **`BuildMessage()`**: RFC 5322 compliant MIME message with Date, From, To, Cc, Message-ID (crypto-random hex), Subject (RFC 2047 Q-encoding for non-ASCII), MIME-Version, Content-Type, Content-Transfer-Encoding (quoted-printable for non-ASCII body)
 - Two send paths: `sendStartTLS()` (port 587) and `sendTLS()` (direct TLS, port 465)
 - Auth: PLAIN auth with `smtp.PlainAuth`
@@ -166,9 +174,9 @@ Shared helper: `splitAndTrim()` in `send_email.go` — splits comma-separated st
 ## Gotchas
 
 - **SMTP addresses:** IMAP can return display names like `'Edouard' <edouard@squirrel.fr>`. `extractEmail()` in `internal/smtp/sender.go` strips these before `RCPT TO`. Always use it when passing addresses to SMTP.
-- **No tests:** `go test ./...` passes trivially (no `_test.go` files exist).
+- **Thin test coverage:** only `internal/imap/fetch_test.go` exists (MIME walk, HTML→text, link extraction, body formats). Everything else is untested — `go test ./...` passing says little.
 - **macOS-only:** Keychain auth via `go-keyring` — won't work on Linux without D-Bus/Secret Service. `env` auth type is available as alternative.
-- **Config path confusion:** CLAUDE.md says `~/.config/mailbridge-mcp/config.yaml` — this is **wrong**. The real path is `~/.config/mailbridge/accounts.json` (JSON, not YAML). Trust the code in `config.go:73`, not CLAUDE.md.
+- **Config path:** `~/.config/mailbridge/accounts.json` (JSON, not YAML). When in doubt, trust `config.go:73` over any doc.
 - **IMAP pool:** Connections are pooled lazily. Must call `defer pool.Close()` after `NewPool()`.
 - **goreleaser:** darwin-only builds (amd64 + arm64). CGO_ENABLED=0. Homebrew cask published to `edouard-claude/homebrew-tap`.
 - **Message-IDs:** `go-imap` envelope returns Message-IDs with or without angle brackets depending on the server. Always use `ensureAngleBrackets()` from `reply_email.go` before emitting them in headers.

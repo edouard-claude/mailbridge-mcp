@@ -33,7 +33,7 @@ Si `/mcp` échoue avec "Failed to reconnect" :
 - `internal/imap/` — Client IMAP (pool de connexions)
 - `internal/smtp/` — Envoi SMTP (StartTLS/TLS)
 - `internal/tools/` — Outils MCP (search, read, reply, send, etc.)
-- `internal/config/` — Config YAML (`~/.config/mailbridge-mcp/config.yaml`)
+- `internal/config/` — Config JSON (`~/.config/mailbridge/accounts.json`), voir `config.go:73`
 - `internal/auth/` — Mots de passe via macOS Keychain
 
 ## Config MCP Claude Code
@@ -47,6 +47,16 @@ Définie dans `~/.claude.json` :
 }
 ```
 
+## Lecture des mails — corps vide ?
+
+Un corps vide n'est presque jamais un problème IMAP : c'est un mail **HTML seul** ou
+**transféré plusieurs fois** (`message/rfc822` imbriqués). `internal/imap/fetch.go`
+parcourt tout l'arbre MIME et convertit le HTML en texte ; `internal/imap/html.go`
+fait la conversion et extrait les liens actionnables (`mailto:`, `tel:`, URLs).
+
+`read_email` accepte `body_format` : `auto` (défaut, texte puis HTML converti),
+`text`, `html` (source brute), `both`. Passer `max_body_chars: 0` pour ne pas tronquer.
+
 ## SMTP — Gotcha adresses
 
 Les adresses email récupérées via IMAP peuvent contenir des display names (ex: `'Edouard CLAUDE' <edouard@squirrel.fr>`). La fonction `extractEmail()` dans `internal/smtp/sender.go` parse ces adresses avant de les passer au `RCPT TO` SMTP qui n'accepte que des adresses nues.
@@ -56,4 +66,4 @@ Les adresses email récupérées via IMAP peuvent contenir des display names (ex
 - Go standard library, pas de frameworks HTTP
 - `net/mail.ParseAddress()` pour parser les adresses email
 - Credentials via macOS Keychain (jamais en dur)
-- Tests : `go test ./...`
+- Tests : `go test ./...` (couverture actuelle : parsing MIME/HTML dans `internal/imap`)
