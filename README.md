@@ -5,7 +5,7 @@ MCP server for multi-account IMAP/SMTP email access, designed for Claude Desktop
 ## Features
 
 - **Multi-account** — manage multiple email accounts from a single server
-- **IMAP** — list mailboxes, search, read, move, copy, delete, and flag emails
+- **IMAP** — list mailboxes, search, read, download attachments, move, copy, delete, and flag emails
 - **Drafts** — save drafts and send them later
 - **Folders** — create, rename, and delete mailbox folders
 - **SMTP** — send new emails and reply to existing ones with proper threading headers
@@ -21,6 +21,7 @@ MCP server for multi-account IMAP/SMTP email access, designed for Claude Desktop
 | `mailbox_status` | Get message/unseen count for a mailbox |
 | `search_emails` | Search emails by sender, subject, date, read/unread, flagged/starred |
 | `read_email` | Read full email content by UID |
+| `save_attachment` | Download an attachment to a local directory |
 | `send_email` | Send a new email |
 | `reply_email` | Reply to an email (with proper In-Reply-To/References) |
 | `save_draft` | Save a draft email to the Drafts folder |

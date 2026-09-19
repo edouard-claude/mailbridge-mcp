@@ -194,8 +194,15 @@ func (p *ParsedEmail) walk(e *message.Entity, text, htm *strings.Builder, depth 
 		if filename == "" && !isAttachment {
 			return // inline image without a name: not worth listing
 		}
+		// Read the part so the listing reports its decoded size; the part
+		// is never needed again afterwards.
+		var size int64
+		if data, err := io.ReadAll(e.Body); err == nil {
+			size = int64(len(data))
+		}
 		p.Attachments = append(p.Attachments, Attachment{
 			Filename: filename,
+			Size:     size,
 			MimeType: mediaType,
 		})
 		return
@@ -314,7 +321,11 @@ func FormatEmail(parsed *ParsedEmail) string {
 	if len(parsed.Attachments) > 0 {
 		fmt.Fprintf(&sb, "\n\n---\nAttachments:\n")
 		for _, a := range parsed.Attachments {
-			fmt.Fprintf(&sb, "- %s (%s)\n", a.Filename, a.MimeType)
+			if a.Size > 0 {
+				fmt.Fprintf(&sb, "- %s (%s, %d bytes)\n", a.Filename, a.MimeType, a.Size)
+			} else {
+				fmt.Fprintf(&sb, "- %s (%s)\n", a.Filename, a.MimeType)
+			}
 		}
 	}
 	return sb.String()
