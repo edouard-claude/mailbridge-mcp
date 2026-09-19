@@ -13,6 +13,7 @@ func RegisterAll(s *server.MCPServer, cfg *config.Config, pool *imappool.Pool) {
 	registerListMailboxes(s, cfg, pool)
 	registerSearchEmails(s, cfg, pool)
 	registerReadEmail(s, cfg, pool)
+	registerSaveAttachment(s, cfg, pool)
 	registerMailboxStatus(s, cfg, pool)
 
 	// Write operations - email

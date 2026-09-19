@@ -12,7 +12,7 @@ import (
 
 func registerReadEmail(s *server.MCPServer, cfg *config.Config, pool *imappool.Pool) {
 	tool := mcp.NewTool("read_email",
-		mcp.WithDescription("Read the full content of an email by its UID. Returns headers (from, to, cc, date, subject) and body. Walks the whole MIME tree, including forwarded messages (message/rfc822), so nothing is lost on multi-level forwards. Use body_format to choose the rendering: 'auto' (plain text, falling back to HTML converted to text), 'html' (raw HTML source), 'both'. Lists attachments with filenames and mime types but does not download them."),
+		mcp.WithDescription("Read the full content of an email by its UID. Returns headers (from, to, cc, date, subject) and body. Walks the whole MIME tree, including forwarded messages (message/rfc822), so nothing is lost on multi-level forwards. Use body_format to choose the rendering: 'auto' (plain text, falling back to HTML converted to text), 'html' (raw HTML source), 'both'. Lists attachments with filenames, mime types and sizes but does not download them; use save_attachment to save an attachment to disk."),
 		mcp.WithString("account_id",
 			mcp.Description("Account identifier"),
 			mcp.Required(),

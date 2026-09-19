@@ -107,9 +107,9 @@ Key conventions:
 - Tools that send email (send_email, reply_email, send_draft) also copy the sent message to the Sent folder via `imappool.FindSentMailbox()` + `imappool.AppendMessage()`
 - Error messages include the operation name, UID, mailbox, or account for debugging
 
-## Complete Tool List (16 tools)
+## Complete Tool List (17 tools)
 
-**Read (5):** `list_accounts`, `list_mailboxes`, `search_emails`, `read_email`, `mailbox_status`
+**Read (6):** `list_accounts`, `list_mailboxes`, `search_emails`, `read_email`, `save_attachment` (downloads an attachment to disk), `mailbox_status`
 **Write — email (4):** `send_email`, `reply_email`, `save_draft`, `send_draft`
 **Write — mailbox (4):** `move_email`, `copy_email`, `mark_email`, `delete_email`
 **Write — folder (3):** `create_mailbox`, `rename_mailbox`, `delete_mailbox`
@@ -135,7 +135,8 @@ Shared helper: `splitAndTrim()` in `send_email.go` — splits comma-separated st
 - `htmlToText()` (`html.go`): strips script/style, maps block tags to newlines, rewrites `<a href>` as `label (url)`.
   **Careful:** the tag-stripping pass runs *after* link rewriting — never emit `<...>` there, it gets eaten (caught by `TestHTMLToText`).
 - `ExtractLinks()` (`html.go`): actionable links only — `mailto:`/`tel:` first, then URLs, deduped, tracker hosts and `unsubscribe`-style URLs dropped, capped at `maxExtractedLinks` and `maxPerHost`. Surfaces reply relays such as `@messagerie.leboncoin.fr`.
-- `FormatEmail()`: headers, body, `Links:` section, attachment list
+- `FormatEmail()`: headers, body, `Links:` section, attachment list (with sizes)
+- `SaveAttachment()` / `ExtractAttachment()` (`attachment.go`): find a named attachment in a raw message and write it to `dest_dir/filename`; go-message decodes base64/quoted-printable, traversal mirrors `walk()`; path-separator filenames and >100 MiB attachments rejected, `dest_dir` must be absolute
 - Non-UTF-8 charsets are registered via `go-message/charset`; `decodeHeader()` decodes RFC 2047 encoded-words.
 - `truncate()`: appends `"\n... [truncated]"` when body exceeds `maxBodyChars`
 - `formatAddress()`: `Name <mailbox@host>` if name present, otherwise bare email
@@ -174,7 +175,7 @@ Shared helper: `splitAndTrim()` in `send_email.go` — splits comma-separated st
 ## Gotchas
 
 - **SMTP addresses:** IMAP can return display names like `'Edouard' <edouard@squirrel.fr>`. `extractEmail()` in `internal/smtp/sender.go` strips these before `RCPT TO`. Always use it when passing addresses to SMTP.
-- **Thin test coverage:** only `internal/imap/fetch_test.go` exists (MIME walk, HTML→text, link extraction, body formats). Everything else is untested — `go test ./...` passing says little.
+- **Thin test coverage:** only `internal/imap/fetch_test.go` and `internal/imap/attachment_test.go` exist (MIME walk, HTML→text, link extraction, body formats, attachment extraction/saving). Everything else is untested — `go test ./...` passing says little.
 - **macOS-only:** Keychain auth via `go-keyring` — won't work on Linux without D-Bus/Secret Service. `env` auth type is available as alternative.
 - **Config path:** `~/.config/mailbridge/accounts.json` (JSON, not YAML). When in doubt, trust `config.go:73` over any doc.
 - **IMAP pool:** Connections are pooled lazily. Must call `defer pool.Close()` after `NewPool()`.
