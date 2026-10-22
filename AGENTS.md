@@ -59,7 +59,9 @@ internal/imap/fetch.go         → FetchEmail(), ParsedEmail, MIME body parsing,
 internal/imap/operations.go    → MoveEmail, MarkEmail, DeleteEmail, CopyEmail, ListMailboxes,
                                   CreateMailbox, DeleteMailbox, RenameMailbox, AppendMessage,
                                   FindSentMailbox, MailboxStatus
-internal/smtp/sender.go        → Send(), SendReply(), BuildMessage() — RFC 5322 compliant MIME construction
+internal/smtp/sender.go        → Send(), BuildReply(), BuildMessage() — RFC 5322 headers, SMTP transport
+internal/smtp/compose.go       → Body/Signature/Quote, MIME tree (mixed > related > alternative), CID images
+internal/tools/signature.go    → per-account signature resolution, per-call override, dedup (docs/signature.md)
 internal/tools/registry.go     → RegisterAll() calls each register* function
 internal/tools/*.go            → One file per MCP tool, each with a registerXxx() function
 ```
@@ -103,8 +105,10 @@ Key conventions:
 - **account_id** is always the first param and always required
 - **mailbox** defaults to `"INBOX"` unless specified
 - Always check `cfg.Account(accountID) == nil` before using the account
-- **IMAP tools** use `pool.Get(accountID)` to get client; **SMTP tools** use `auth.GetPassword(acc.Auth)` then `smtpsender.Send()/SendReply()`
-- Tools that send email (send_email, reply_email, send_draft) also copy the sent message to the Sent folder via `imappool.FindSentMailbox()` + `imappool.AppendMessage()`
+- **IMAP tools** use `pool.Get(accountID)` to get client; **SMTP tools** use `auth.GetPassword(acc.Auth)` then `smtpsender.Send()/SendRaw()`
+- `reply_email` saves a threaded draft by default (`BuildReply()` + `AppendMessage()` with `\Draft`); it sends only with `send: true`
+- Drafts folder: `imappool.FindDraftsMailbox()` (`\Drafts` special-use, then Drafts/Brouillons) when no mailbox is passed
+- Tools that send email (send_email, reply_email with send=true, send_draft) also copy the sent message to the Sent folder via `imappool.FindSentMailbox()` + `imappool.AppendMessage()`
 - Error messages include the operation name, UID, mailbox, or account for debugging
 
 ## Complete Tool List (17 tools)
@@ -149,18 +153,21 @@ Shared helper: `splitAndTrim()` in `send_email.go` — splits comma-separated st
 - `MailboxStatus()`: only requests `NumMessages`/`NumUnseen` — explicitly avoids `NumDeleted` because many servers (OVH, Dovecot) return BAD for it
 
 ### Pool (`client.go`)
-- Thread-safe with `sync.Mutex`
-- On `Get()`: runs NOOP to check health; if dead, closes and reconnects
+- Thread-safe with `sync.Mutex`, never held during network I/O
+- On `Get()`: runs NOOP (10 s timeout) to check health; if dead or stuck, closes and reconnects
+- `Drop(accountID)`: closes a connection, failing its pending commands
+- Every tool call is bounded by `TimeoutMiddleware` (`internal/tools/timeout.go`, 150 s): on timeout it returns an error and drops the account's connection
 - `Close()`: logs out + closes all connections
 
 ## SMTP Patterns (`sender.go`)
 
 - **`extractEmail(addr)`**: Uses `net/mail.ParseAddress()` to strip display names. **Always use before `RCPT TO`** — SMTP only accepts bare addresses. Has a manual angle-bracket fallback.
-- **`Send()` / `SendReply()`**: Build message → send via TLS or StartTLS → return raw message bytes for IMAP Sent copy. Both take an attachments slice (`send_email`, `reply_email`, `save_draft` expose it as a JSON array param: `filename`, `content_base64`, `mime_type`).
+- **`Send()`**: Build message → send via TLS or StartTLS → return raw message bytes for IMAP Sent copy. `BuildReply()` builds a reply (threading headers + "Re:") for either a draft or `SendRaw()`. Both take an attachments slice (`send_email`, `reply_email`, `save_draft` expose it as a JSON array param: `filename`, `content_base64`, `mime_type`).
 - **`SendRaw()`**: sends an already-built MIME message as-is. Used by `send_draft`, which fetches the draft with `FetchRawBody()` so attachments and structure survive the round-trip.
 - **`BuildMessage()`**: RFC 5322 compliant MIME message with Date, From, To, Cc, Message-ID (crypto-random hex), Subject (RFC 2047 Q-encoding for non-ASCII), MIME-Version, Content-Type, Content-Transfer-Encoding (quoted-printable for non-ASCII body)
 - Two send paths: `sendStartTLS()` (port 587) and `sendTLS()` (direct TLS, port 465)
 - Auth: PLAIN auth with `smtp.PlainAuth`
+- Timeouts: 30 s dial, 2 min deadline on the whole SMTP session (net/smtp has none)
 - Header folding: `foldHeader()` wraps long headers (like References) to ≤78 chars per RFC 5322 §2.2.3
 - Header sanitization: `sanitizeHeaderValue()` strips CR/LF to prevent header injection
 
@@ -175,7 +182,8 @@ Shared helper: `splitAndTrim()` in `send_email.go` — splits comma-separated st
 ## Gotchas
 
 - **SMTP addresses:** IMAP can return display names like `'Edouard' <edouard@squirrel.fr>`. `extractEmail()` in `internal/smtp/sender.go` strips these before `RCPT TO`. Always use it when passing addresses to SMTP.
-- **Thin test coverage:** only `internal/imap/fetch_test.go` and `internal/imap/attachment_test.go` exist (MIME walk, HTML→text, link extraction, body formats, attachment extraction/saving). Everything else is untested — `go test ./...` passing says little.
+- **Thin test coverage:** `internal/imap/fetch_test.go` and `internal/imap/attachment_test.go` (MIME walk, HTML→text, link extraction, body formats, attachment extraction/saving), `internal/smtp/sender_test.go` (`BuildReply`, signature MIME tree, CID) and `internal/tools/signature_test.go` (signature resolution, dedup). Everything else is untested.
+- **Keychain timeout:** `auth.GetPassword` gives up after 15 s (locked keychain or an unseen access prompt when launched by Claude Desktop).
 - **macOS-only:** Keychain auth via `go-keyring` — won't work on Linux without D-Bus/Secret Service. `env` auth type is available as alternative.
 - **Config path:** `~/.config/mailbridge/accounts.json` (JSON, not YAML). When in doubt, trust `config.go:73` over any doc.
 - **IMAP pool:** Connections are pooled lazily. Must call `defer pool.Close()` after `NewPool()`.

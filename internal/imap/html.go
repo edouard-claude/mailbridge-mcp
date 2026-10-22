@@ -18,9 +18,9 @@ var (
 	reBlankLines  = regexp.MustCompile(`\n{3,}`)
 )
 
-// htmlToText converts an HTML body to readable plain text while keeping the
+// HTMLToText converts an HTML body to readable plain text while keeping the
 // line structure: block-level tags become newlines, links keep their URL.
-func htmlToText(s string) string {
+func HTMLToText(s string) string {
 	s = reScriptStyle.ReplaceAllString(s, "")
 	s = reComment.ReplaceAllString(s, "")
 	s = extractLinks(s)

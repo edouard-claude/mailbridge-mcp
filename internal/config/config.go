@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type Config struct {
@@ -19,6 +20,30 @@ type Account struct {
 	IMAP  IMAPConfig `json:"imap"`
 	SMTP  SMTPConfig `json:"smtp"`
 	Auth  AuthConfig `json:"auth"`
+
+	Signature *SignatureConfig `json:"signature,omitempty"`
+}
+
+// SignatureConfig is the account signature, appended to new messages and
+// replies (before the quote). Each version is given inline or as a file; file
+// paths are relative to the config directory and read at each use, so edits
+// apply without restarting the server. The HTML references images as
+// cid:<cid>, e.g. <img src="cid:logo" width="120" height="40" alt="Logo">.
+type SignatureConfig struct {
+	Disabled bool             `json:"disabled,omitempty"`
+	Text     string           `json:"text,omitempty"`
+	TextFile string           `json:"text_file,omitempty"`
+	HTML     string           `json:"html,omitempty"`
+	HTMLFile string           `json:"html_file,omitempty"`
+	Images   []SignatureImage `json:"images,omitempty"`
+}
+
+// SignatureImage is an image embedded in the message and shown by the HTML
+// signature through its Content-ID. ContentType is detected when empty.
+type SignatureImage struct {
+	CID         string `json:"cid"`
+	Path        string `json:"path"`
+	ContentType string `json:"content_type,omitempty"`
 }
 
 type IMAPConfig struct {
@@ -64,13 +89,42 @@ func (c *Config) Account(id string) *Account {
 	return nil
 }
 
-func Load() (*Config, error) {
+// Dir returns the config directory, ~/.config/mailbridge.
+func Dir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil, fmt.Errorf("cannot determine home directory: %w", err)
+		return "", fmt.Errorf("cannot determine home directory: %w", err)
+	}
+	return filepath.Join(home, ".config", "mailbridge"), nil
+}
+
+// ResolvePath expands a leading "~/" and makes relative paths relative to the
+// config directory.
+func ResolvePath(p string) (string, error) {
+	if strings.HasPrefix(p, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("cannot determine home directory: %w", err)
+		}
+		return filepath.Join(home, p[2:]), nil
+	}
+	if filepath.IsAbs(p) {
+		return p, nil
+	}
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, p), nil
+}
+
+func Load() (*Config, error) {
+	dir, err := Dir()
+	if err != nil {
+		return nil, err
 	}
 
-	path := filepath.Join(home, ".config", "mailbridge", "accounts.json")
+	path := filepath.Join(dir, "accounts.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("cannot read config %s: %w", path, err)
@@ -101,6 +155,13 @@ func Load() (*Config, error) {
 		}
 		if acc.Email == "" {
 			return nil, fmt.Errorf("account %q: missing email", acc.ID)
+		}
+		if sig := acc.Signature; sig != nil {
+			for _, img := range sig.Images {
+				if img.CID == "" || img.Path == "" {
+					return nil, fmt.Errorf("account %q: signature image needs cid and path", acc.ID)
+				}
+			}
 		}
 	}
 

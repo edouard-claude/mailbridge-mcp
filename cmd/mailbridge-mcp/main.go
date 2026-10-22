@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/edouard-claude/mailbridge-mcp/internal/auth"
 	"github.com/edouard-claude/mailbridge-mcp/internal/config"
@@ -17,6 +18,9 @@ import (
 )
 
 var version = "dev"
+
+// toolTimeout bounds a single tool call, above the SMTP session timeout.
+const toolTimeout = 150 * time.Second
 
 func main() {
 	if len(os.Args) < 2 {
@@ -47,7 +51,8 @@ func runServer() {
 	s := server.NewMCPServer(
 		"mailbridge-mcp",
 		version,
-		server.WithInstructions("Email bridge for reading, searching, and sending emails across multiple accounts. Credentials are stored securely in macOS Keychain."),
+		server.WithInstructions("Email bridge for reading, searching, and sending emails across multiple accounts. Credentials are stored securely in macOS Keychain. Replies are saved as drafts by default for user review; only send when the user explicitly asks."),
+		server.WithToolHandlerMiddleware(tools.TimeoutMiddleware(pool, toolTimeout)),
 	)
 
 	tools.RegisterAll(s, cfg, pool)
@@ -137,6 +142,7 @@ func runSetup() {
 	replaced := false
 	for i, acc := range cfg.Accounts {
 		if acc.ID == accountID {
+			newAcc.Signature = acc.Signature // setup does not manage signatures
 			cfg.Accounts[i] = newAcc
 			replaced = true
 			break

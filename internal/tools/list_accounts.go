@@ -23,7 +23,11 @@ func registerListAccounts(s *server.MCPServer, cfg *config.Config) {
 		var sb strings.Builder
 		sb.WriteString("Configured accounts:\n")
 		for _, acc := range cfg.Accounts {
-			fmt.Fprintf(&sb, "- %s: %s (%s)\n", acc.ID, acc.Label, acc.Email)
+			sig := ""
+			if s := acc.Signature; s != nil && !s.Disabled {
+				sig = " [signature]"
+			}
+			fmt.Fprintf(&sb, "- %s: %s (%s)%s\n", acc.ID, acc.Label, acc.Email, sig)
 		}
 		return mcp.NewToolResultText(sb.String()), nil
 	})

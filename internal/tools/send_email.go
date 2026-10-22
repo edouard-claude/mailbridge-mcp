@@ -17,8 +17,8 @@ import (
 )
 
 func registerSendEmail(s *server.MCPServer, cfg *config.Config, pool *imappool.Pool) {
-	tool := mcp.NewTool("send_email",
-		mcp.WithDescription("Send a new email from a configured account. Supports plain text body, CC, BCC, and attachments. Attachments are passed as a JSON array of objects with 'filename', 'content_base64', and optional 'mime_type' fields."),
+	tool := mcp.NewTool("send_email", append([]mcp.ToolOption{
+		mcp.WithDescription("Send a new email from a configured account. Supports plain text body, CC, BCC, and attachments. Attachments are passed as a JSON array of objects with 'filename', 'content_base64', and optional 'mime_type' fields. The account signature (text + HTML with inline images) is appended automatically; see the signature parameters."),
 		mcp.WithString("account_id",
 			mcp.Description("Account to send from"),
 			mcp.Required(),
@@ -48,7 +48,7 @@ func registerSendEmail(s *server.MCPServer, cfg *config.Config, pool *imappool.P
 		mcp.WithDestructiveHintAnnotation(true),
 		mcp.WithIdempotentHintAnnotation(false),
 		mcp.WithOpenWorldHintAnnotation(true),
-	)
+	}, signatureOptions()...)...)
 
 	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		accountID := req.GetString("account_id", "")
@@ -83,12 +83,17 @@ func registerSendEmail(s *server.MCPServer, cfg *config.Config, pool *imappool.P
 			return mcp.NewToolResultError(fmt.Sprintf("invalid attachments: %v", err)), nil
 		}
 
+		sig, err := resolveSignature(acc, req, body)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+
 		password, err := auth.GetPassword(acc.Auth)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("get password for %s: %v", acc.Email, err)), nil
 		}
 
-		msg, err := smtpsender.Send(acc, password, to, cc, bcc, subject, body, attachments)
+		msg, err := smtpsender.Send(acc, password, to, cc, bcc, subject, smtpsender.Body{Text: body, Signature: sig}, attachments)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("send failed: %v", err)), nil
 		}
@@ -100,7 +105,7 @@ func registerSendEmail(s *server.MCPServer, cfg *config.Config, pool *imappool.P
 			}
 		}
 
-		return mcp.NewToolResultText(fmt.Sprintf("Email sent successfully from %s to %s.", acc.Email, toStr)), nil
+		return mcp.NewToolResultText(fmt.Sprintf("Email sent successfully from %s to %s.%s", acc.Email, toStr, describeSignature(sig))), nil
 	})
 }
 

@@ -9,6 +9,7 @@ MCP server for multi-account IMAP/SMTP email access, designed for Claude Desktop
 - **Drafts** — save drafts and send them later
 - **Folders** — create, rename, and delete mailbox folders
 - **SMTP** — send new emails and reply to existing ones with proper threading headers
+- **Signature** — per-account text + HTML signature with CID-embedded images, added before the quoted original (see [docs/signature.md](docs/signature.md))
 - **macOS Keychain** — passwords are stored securely, never in config files
 - **MCP stdio** — runs as a subprocess launched by Claude Desktop
 
@@ -23,7 +24,7 @@ MCP server for multi-account IMAP/SMTP email access, designed for Claude Desktop
 | `read_email` | Read full email content by UID |
 | `save_attachment` | Download an attachment to a local directory |
 | `send_email` | Send a new email |
-| `reply_email` | Reply to an email (with proper In-Reply-To/References) |
+| `reply_email` | Reply to an email (In-Reply-To/References, quoted original). Saved as a threaded draft by default; `send: true` sends it |
 | `save_draft` | Save a draft email to the Drafts folder |
 | `send_draft` | Send a draft email by UID |
 | `move_email` | Move an email to another folder |

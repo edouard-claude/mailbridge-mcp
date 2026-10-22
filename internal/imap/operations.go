@@ -170,6 +170,15 @@ func AppendMessage(c *imapclient.Client, mailbox string, flags []goimap.Flag, ms
 // FindSentMailbox detects the Sent folder for the account. It first checks
 // for the \Sent special-use attribute (RFC 6154), then falls back to common names.
 func FindSentMailbox(c *imapclient.Client) (string, error) {
+	return findSpecialMailbox(c, goimap.MailboxAttrSent, "sent", "sent messages", "sent items", "envoyés", "éléments envoyés")
+}
+
+// FindDraftsMailbox detects the Drafts folder for the account, like FindSentMailbox.
+func FindDraftsMailbox(c *imapclient.Client) (string, error) {
+	return findSpecialMailbox(c, goimap.MailboxAttrDrafts, "drafts", "draft", "brouillons")
+}
+
+func findSpecialMailbox(c *imapclient.Client, attr goimap.MailboxAttr, names ...string) (string, error) {
 	mailboxes, err := c.List("", "*", &goimap.ListOptions{
 		ReturnSpecialUse: true,
 	}).Collect()
@@ -181,10 +190,9 @@ func FindSentMailbox(c *imapclient.Client) (string, error) {
 		}
 	}
 
-	// Check for \Sent attribute
 	for _, mb := range mailboxes {
-		for _, attr := range mb.Attrs {
-			if attr == goimap.MailboxAttrSent {
+		for _, a := range mb.Attrs {
+			if a == attr {
 				return mb.Mailbox, nil
 			}
 		}
@@ -194,12 +202,14 @@ func FindSentMailbox(c *imapclient.Client) (string, error) {
 	for _, mb := range mailboxes {
 		parts := strings.Split(mb.Mailbox, string(mb.Delim))
 		last := strings.ToLower(parts[len(parts)-1])
-		if last == "sent" || last == "sent messages" {
-			return mb.Mailbox, nil
+		for _, name := range names {
+			if last == name {
+				return mb.Mailbox, nil
+			}
 		}
 	}
 
-	return "", fmt.Errorf("no Sent mailbox found")
+	return "", fmt.Errorf("no %s mailbox found", strings.TrimPrefix(string(attr), "\\"))
 }
 
 // MailboxStatusInfo holds status information about a mailbox.

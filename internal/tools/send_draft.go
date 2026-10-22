@@ -16,7 +16,7 @@ import (
 
 func registerSendDraft(s *server.MCPServer, cfg *config.Config, pool *imappool.Pool) {
 	tool := mcp.NewTool("send_draft",
-		mcp.WithDescription("Send a draft email from the Drafts folder. Fetches the draft, sends it via SMTP, then deletes the draft."),
+		mcp.WithDescription("Send a draft email from the Drafts folder. Fetches the draft, sends it via SMTP unchanged (MIME structure, attachments and signature kept, no signature added again), then deletes the draft."),
 		mcp.WithString("account_id",
 			mcp.Description("Account identifier"),
 			mcp.Required(),
@@ -26,7 +26,7 @@ func registerSendDraft(s *server.MCPServer, cfg *config.Config, pool *imappool.P
 			mcp.Required(),
 		),
 		mcp.WithString("mailbox",
-			mcp.Description("Mailbox containing the draft (default: 'Drafts')"),
+			mcp.Description("Mailbox containing the draft (default: auto-detected Drafts folder)"),
 		),
 		mcp.WithReadOnlyHintAnnotation(false),
 		mcp.WithDestructiveHintAnnotation(true),
@@ -49,11 +49,17 @@ func registerSendDraft(s *server.MCPServer, cfg *config.Config, pool *imappool.P
 		if uid == 0 {
 			return mcp.NewToolResultError("uid is required"), nil
 		}
-		draftsMailbox := req.GetString("mailbox", "Drafts")
 
 		client, err := pool.Get(accountID)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("IMAP connection failed: %v", err)), nil
+		}
+
+		draftsMailbox := req.GetString("mailbox", "")
+		if draftsMailbox == "" {
+			if draftsMailbox, err = imappool.FindDraftsMailbox(client); err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("%v (pass mailbox explicitly)", err)), nil
+			}
 		}
 
 		// Fetch the draft raw body to preserve attachments and MIME structure

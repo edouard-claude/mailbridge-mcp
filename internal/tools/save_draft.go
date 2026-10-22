@@ -14,8 +14,8 @@ import (
 )
 
 func registerSaveDraft(s *server.MCPServer, cfg *config.Config, pool *imappool.Pool) {
-	tool := mcp.NewTool("save_draft",
-		mcp.WithDescription("Save a draft email to the Drafts folder. Does NOT send the email."),
+	tool := mcp.NewTool("save_draft", append([]mcp.ToolOption{
+		mcp.WithDescription("Save a draft email to the Drafts folder. Does NOT send the email. The account signature is included in the draft (send_draft sends it as is, never adding it twice)."),
 		mcp.WithString("account_id",
 			mcp.Description("Account identifier"),
 			mcp.Required(),
@@ -38,13 +38,13 @@ func registerSaveDraft(s *server.MCPServer, cfg *config.Config, pool *imappool.P
 			mcp.Description("JSON array of attachments: [{\"filename\":\"...\", \"content_base64\":\"...\", \"mime_type\":\"...\"}]"),
 		),
 		mcp.WithString("mailbox",
-			mcp.Description("Drafts mailbox name (default: 'Drafts')"),
+			mcp.Description("Drafts mailbox name (default: auto-detected via \\Drafts special-use, then common names)"),
 		),
 		mcp.WithReadOnlyHintAnnotation(false),
 		mcp.WithDestructiveHintAnnotation(false),
 		mcp.WithIdempotentHintAnnotation(false),
 		mcp.WithOpenWorldHintAnnotation(false),
-	)
+	}, signatureOptions()...)...)
 
 	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		accountID := req.GetString("account_id", "")
@@ -68,18 +68,29 @@ func registerSaveDraft(s *server.MCPServer, cfg *config.Config, pool *imappool.P
 
 		to := splitAndTrim(req.GetString("to", ""))
 		cc := splitAndTrim(req.GetString("cc", ""))
-		draftsMailbox := req.GetString("mailbox", "Drafts")
 
 		attachments, err := parseAttachments(req.GetString("attachments", ""))
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("invalid attachments: %v", err)), nil
 		}
 
-		msg := smtpsender.BuildMessage(acc.Email, to, cc, subject, body, attachments, nil)
+		sig, err := resolveSignature(acc, req, body)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+
+		msg := smtpsender.BuildMessage(acc.Email, to, cc, subject, smtpsender.Body{Text: body, Signature: sig}, attachments, nil)
 
 		client, err := pool.Get(accountID)
 		if err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("IMAP connection failed: %v", err)), nil
+		}
+
+		draftsMailbox := req.GetString("mailbox", "")
+		if draftsMailbox == "" {
+			if draftsMailbox, err = imappool.FindDraftsMailbox(client); err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("%v (pass mailbox explicitly)", err)), nil
+			}
 		}
 
 		if err := imappool.AppendMessage(client, draftsMailbox, []goimap.Flag{goimap.FlagDraft}, msg); err != nil {
@@ -90,6 +101,6 @@ func registerSaveDraft(s *server.MCPServer, cfg *config.Config, pool *imappool.P
 		if recipients == "" {
 			recipients = "(no recipients yet)"
 		}
-		return mcp.NewToolResultText(fmt.Sprintf("Draft saved to %s: \"%s\" → %s", draftsMailbox, subject, recipients)), nil
+		return mcp.NewToolResultText(fmt.Sprintf("Draft saved to %s: \"%s\" → %s.%s", draftsMailbox, subject, recipients, describeSignature(sig))), nil
 	})
 }

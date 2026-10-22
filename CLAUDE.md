@@ -57,6 +57,19 @@ fait la conversion et extrait les liens actionnables (`mailto:`, `tel:`, URLs).
 `read_email` accepte `body_format` : `auto` (défaut, texte puis HTML converti),
 `text`, `html` (source brute), `both`. Passer `max_body_chars: 0` pour ne pas tronquer.
 
+## Réponses — brouillon par défaut
+
+`reply_email` enregistre la réponse dans Brouillons (APPEND `\Draft`, en-têtes de fil, citation) et n'envoie
+que si `send: true`. Le dossier Brouillons est auto-détecté (`FindDraftsMailbox`). Chaque appel d'outil est
+borné à 150 s (`internal/tools/timeout.go`) : au-delà, la connexion IMAP du compte est coupée.
+
+## Signature
+
+Config par compte (`signature` dans `accounts.json`, voir `docs/signature.md`). Résolue dans
+`internal/tools/signature.go` (fichiers relus à chaque appel, dédoublonnage, paramètres
+`signature` / `signature_text` / `signature_html`), composée dans `internal/smtp/compose.go`
+(mixed > related > alternative, CID uniques). `send_draft` envoie le brut : jamais de re-signature.
+
 ## SMTP — Gotcha adresses
 
 Les adresses email récupérées via IMAP peuvent contenir des display names (ex: `'Edouard CLAUDE' <edouard@squirrel.fr>`). La fonction `extractEmail()` dans `internal/smtp/sender.go` parse ces adresses avant de les passer au `RCPT TO` SMTP qui n'accepte que des adresses nues.

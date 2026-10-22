@@ -16,8 +16,8 @@ import (
 )
 
 func registerReplyEmail(s *server.MCPServer, cfg *config.Config, pool *imappool.Pool) {
-	tool := mcp.NewTool("reply_email",
-		mcp.WithDescription("Reply to an existing email. Sets In-Reply-To and References headers correctly. Prefixes subject with 'Re:' if not already present. Quotes the original message body. Supports attachments."),
+	tool := mcp.NewTool("reply_email", append([]mcp.ToolOption{
+		mcp.WithDescription("Reply to an existing email. By default the reply is NOT sent: it is saved to the Drafts folder (IMAP APPEND, \\Draft flag), threaded with the original, so the user can review it; send it later with send_draft. Pass send=true only when the user explicitly asked to send now. Sets In-Reply-To and References headers, prefixes the subject with 'Re:' if missing, quotes the original message body. The account signature is placed between the reply and the quote. Supports attachments."),
 		mcp.WithString("account_id",
 			mcp.Description("Account to reply from"),
 			mcp.Required(),
@@ -39,11 +39,17 @@ func registerReplyEmail(s *server.MCPServer, cfg *config.Config, pool *imappool.
 		mcp.WithString("attachments",
 			mcp.Description("JSON array of attachments: [{\"filename\":\"...\", \"content_base64\":\"...\", \"mime_type\":\"...\"}]"),
 		),
+		mcp.WithBoolean("send",
+			mcp.Description("Send immediately via SMTP instead of saving a draft (default: false). Only when the user explicitly asked to send."),
+		),
+		mcp.WithString("drafts_mailbox",
+			mcp.Description("Drafts mailbox for the draft (default: auto-detected via \\Drafts special-use, then common names)"),
+		),
 		mcp.WithReadOnlyHintAnnotation(false),
 		mcp.WithDestructiveHintAnnotation(true),
 		mcp.WithIdempotentHintAnnotation(false),
 		mcp.WithOpenWorldHintAnnotation(true),
-	)
+	}, signatureOptions()...)...)
 
 	s.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		accountID := req.GetString("account_id", "")
@@ -109,13 +115,41 @@ func registerReplyEmail(s *server.MCPServer, cfg *config.Config, pool *imappool.
 		inReplyTo := parentID
 		subject := original.Subject
 
-		// Quote original body
-		var quotedBody strings.Builder
-		quotedBody.WriteString(body)
-		quotedBody.WriteString("\n\n")
-		quotedBody.WriteString(fmt.Sprintf("On %s, %s wrote:\n", original.Date, original.From))
-		for _, line := range strings.Split(original.Body, "\n") {
-			quotedBody.WriteString("> " + line + "\n")
+		attachments, err := parseAttachments(req.GetString("attachments", ""))
+		if err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("invalid attachments: %v", err)), nil
+		}
+
+		// Only the new text is checked for duplicates: the quote may carry
+		// the signature of an earlier message of the thread.
+		sig, err := resolveSignature(acc, req, body)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+
+		replyBody := smtpsender.Body{
+			Text:      body,
+			Signature: sig,
+			Quote: &smtpsender.Quote{
+				Header: fmt.Sprintf("On %s, %s wrote:", original.Date, original.From),
+				Text:   original.Body,
+			},
+		}
+		msg := smtpsender.BuildReply(acc.Email, to, cc, subject, replyBody, inReplyTo, references, attachments)
+		recipientList := append(append([]string{}, to...), cc...)
+		recipients := strings.Join(recipientList, ", ")
+
+		if !req.GetBool("send", false) {
+			draftsMailbox := req.GetString("drafts_mailbox", "")
+			if draftsMailbox == "" {
+				if draftsMailbox, err = imappool.FindDraftsMailbox(client); err != nil {
+					return mcp.NewToolResultError(fmt.Sprintf("%v (pass drafts_mailbox explicitly)", err)), nil
+				}
+			}
+			if err := imappool.AppendMessage(client, draftsMailbox, []goimap.Flag{goimap.FlagDraft, goimap.FlagSeen}, msg); err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("save reply draft failed: %v", err)), nil
+			}
+			return mcp.NewToolResultText(fmt.Sprintf("Reply saved as draft in %s (NOT sent) → %s. Review it, then send with send_draft.%s", draftsMailbox, recipients, describeSignature(sig))), nil
 		}
 
 		password, err := auth.GetPassword(acc.Auth)
@@ -123,13 +157,7 @@ func registerReplyEmail(s *server.MCPServer, cfg *config.Config, pool *imappool.
 			return mcp.NewToolResultError(fmt.Sprintf("get password: %v", err)), nil
 		}
 
-		attachments, err := parseAttachments(req.GetString("attachments", ""))
-		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("invalid attachments: %v", err)), nil
-		}
-
-		msg, err := smtpsender.SendReply(acc, password, to, cc, subject, quotedBody.String(), inReplyTo, references, attachments)
-		if err != nil {
+		if _, err := smtpsender.SendRaw(acc, password, recipientList, msg); err != nil {
 			return mcp.NewToolResultError(fmt.Sprintf("reply failed: %v", err)), nil
 		}
 
@@ -138,7 +166,7 @@ func registerReplyEmail(s *server.MCPServer, cfg *config.Config, pool *imappool.
 			imappool.AppendMessage(client, sentMailbox, []goimap.Flag{goimap.FlagSeen}, msg)
 		}
 
-		return mcp.NewToolResultText(fmt.Sprintf("Reply sent successfully from %s to %s.", acc.Email, original.From)), nil
+		return mcp.NewToolResultText(fmt.Sprintf("Reply sent successfully from %s to %s.%s", acc.Email, recipients, describeSignature(sig))), nil
 	})
 }
 

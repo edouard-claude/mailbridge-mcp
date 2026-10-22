@@ -12,18 +12,18 @@ func TestHTMLToText(t *testing.T) {
 	<a href="mailto:x@messagerie.leboncoin.fr">R&eacute;pondre</a>
 	<script>alert(1)</script></body></html>`
 
-	got := htmlToText(in)
+	got := HTMLToText(in)
 
 	for _, want := range []string{"Bonjour,", "caroline vous a contacté.", "- Prénom : Caro", "- Ville : Pessac"} {
 		if !strings.Contains(got, want) {
-			t.Errorf("htmlToText() manque %q\n--- got ---\n%s", want, got)
+			t.Errorf("HTMLToText() manque %q\n--- got ---\n%s", want, got)
 		}
 	}
 	if strings.Contains(got, "alert(1)") || strings.Contains(got, "color:red") {
-		t.Errorf("htmlToText() garde du script/style:\n%s", got)
+		t.Errorf("HTMLToText() garde du script/style:\n%s", got)
 	}
 	if !strings.Contains(got, "Répondre (mailto:x@messagerie.leboncoin.fr)") {
-		t.Errorf("htmlToText() perd l'URL du lien:\n%s", got)
+		t.Errorf("HTMLToText() perd l'URL du lien:\n%s", got)
 	}
 }
 

@@ -215,7 +215,7 @@ func (p *ParsedEmail) walk(e *message.Entity, text, htm *strings.Builder, depth 
 	switch {
 	case strings.HasPrefix(mediaType, "text/html"):
 		appendSection(htm, string(data))
-		appendSection(text, htmlToText(string(data)))
+		appendSection(text, HTMLToText(string(data)))
 	default:
 		appendSection(text, string(data))
 	}
@@ -241,7 +241,7 @@ func (p *ParsedEmail) render(format string) string {
 		if p.TextBody != "" {
 			return p.TextBody
 		}
-		return htmlToText(p.HTMLBody)
+		return HTMLToText(p.HTMLBody)
 	}
 }
 
